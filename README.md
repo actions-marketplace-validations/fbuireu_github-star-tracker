@@ -7,6 +7,7 @@
 [![CI](https://img.shields.io/github/actions/workflow/status/fbuireu/github-star-tracker/ci.yml?style=flat-square&logo=github&label=CI)](https://github.com/fbuireu/github-star-tracker/actions/workflows/ci.yml)
 [![Codecov](https://img.shields.io/codecov/c/gh/fbuireu/github-star-tracker?style=flat-square&logo=codecov)](https://codecov.io/gh/fbuireu/github-star-tracker)
 [![License: AGPL-3.0](https://img.shields.io/badge/License-AGPL%20v3-blue?style=flat-square)](https://www.gnu.org/licenses/agpl-3.0)
+[![Product Hunt](https://img.shields.io/badge/Product%20Hunt-featured-orange?style=flat-square&logo=producthunt&logoColor=white)](https://www.producthunt.com/products/github-star-tracker)
 
 **[Documentation](../../wiki)** · **[Getting Started](../../wiki/Getting-Started)** · **[Configuration](../../wiki/Configuration)** · **[Examples](../../wiki/Examples)** · **[Troubleshooting](../../wiki/Troubleshooting)**
 
