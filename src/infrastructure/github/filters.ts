@@ -6,17 +6,24 @@ import type { GitHubRepo, Octokit } from './types';
 
 const REGEX_PATTERN = /^\/(.+)\/([gimsuy]*)$/;
 
-interface MatchesExcludePatternParams {
+interface MatchesPatternParams {
   name: string;
   patterns: string[];
 }
 
-function matchesExcludePattern({ name, patterns }: MatchesExcludePatternParams): boolean {
+function matchesPattern({ name, patterns }: MatchesPatternParams): boolean {
   return patterns.some((pattern) => {
     const match = REGEX_PATTERN.exec(pattern);
     if (match) {
-      const regex = new RegExp(match[1], match[2]);
-      return regex.test(name);
+      try {
+        return new RegExp(match[1], match[2]).test(name);
+      } catch (error) {
+        core.warning(
+          `Ignoring invalid pattern "${pattern}": ${(error as Error).message}. Filters expect either an exact name or /pattern/flags.`,
+        );
+
+        return false;
+      }
     }
     return name === pattern;
   });
@@ -28,13 +35,24 @@ interface FilterReposParams {
 }
 
 export function filterRepos({ repos, config }: FilterReposParams): GitHubRepo[] {
+  let candidates = repos;
+
+  if (config.onlyOrgs.length > 0) {
+    candidates = candidates.filter((repo) =>
+      matchesPattern({ name: repo.owner.login, patterns: config.onlyOrgs }),
+    );
+    core.info(`After only_orgs filter: ${candidates.length} repos`);
+  }
+
   if (config.onlyRepos.length > 0) {
-    const filtered = repos.filter((repo) => config.onlyRepos.includes(repo.name));
+    const filtered = candidates.filter((repo) =>
+      matchesPattern({ name: repo.name, patterns: config.onlyRepos }),
+    );
     core.info(`After only_repos filter: ${filtered.length} repos`);
     return filtered;
   }
 
-  let filtered = repos;
+  let filtered = candidates;
 
   if (!config.includeArchived) {
     filtered = filtered.filter((repo) => !repo.archived);
@@ -46,7 +64,13 @@ export function filterRepos({ repos, config }: FilterReposParams): GitHubRepo[] 
 
   if (config.excludeRepos.length > 0) {
     filtered = filtered.filter(
-      (repo) => !matchesExcludePattern({ name: repo.name, patterns: config.excludeRepos }),
+      (repo) => !matchesPattern({ name: repo.name, patterns: config.excludeRepos }),
+    );
+  }
+
+  if (config.excludeOrgs.length > 0) {
+    filtered = filtered.filter(
+      (repo) => !matchesPattern({ name: repo.owner.login, patterns: config.excludeOrgs }),
     );
   }
 

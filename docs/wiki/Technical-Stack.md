@@ -1,0 +1,170 @@
+Technologies, design decisions, and architecture overview.
+
+---
+
+## Architecture
+
+The project implements **Domain-Driven Design<sub>(ish)</sub>** with a **Functional Core, Imperative Shell** pattern. Seven layers organize the codebase. They are layers, not DDD bounded contexts: they share a single ubiquitous language, recorded in `CONTEXT.md` at the repo root.
+
+The functional core is pure — no filesystem, no network, no clock beyond an injectable `now`:
+
+| Layer | Directory | Responsibility |
+|---|---|---|
+| **Domain** | `src/domain/` | Core types, comparison, snapshots, forecasts, notifications, stargazers |
+| **Presentation** | `src/presentation/` | Markdown, HTML, SVG charts, badges |
+| **i18n** | `src/i18n/` | Translation bundles, `getTranslations`, `interpolate` - the only true leaf |
+| **Shared** | `src/shared/` | Cross-cutting code owning no layer; today only test fixtures |
+
+The imperative shell performs the side effects, and each layer owns a different one:
+
+| Layer | Directory | Side effect it owns |
+|---|---|---|
+| **Config** | `src/config/` | Reads the action inputs and the YAML config file (`node:fs`) |
+| **Infrastructure** | `src/infrastructure/` | Everything outbound: GitHub API, `git`, the filesystem, SMTP |
+| **Application** | `src/application/` | Orchestrates `trackStars()`, and writes the Action log and outputs |
+
+### Principles
+
+- Dependencies flow inward only (infrastructure depends on domain, never the reverse)
+- Anti-corruption layer isolates external systems (GitHub API types ≠ domain types)
+- Immutable data structures (snapshot operations return new objects)
+- Pure functions for all business logic
+- Side effects confined to three layers: `config` reads inputs and the YAML file, `infrastructure` owns everything outbound, `application` writes the Action log and outputs. `infrastructure` is the only layer that reaches the network, not the only one that performs I/O
+- Named parameters for functions with 2+ arguments (destructured objects with typed interfaces)
+
+### Path Aliases
+
+Cross-layer imports use TypeScript path aliases for clean boundaries:
+
+```typescript
+import { loadConfig } from '@config/loader';
+import { compareStars } from '@domain/comparison';
+import { getRepos } from '@infrastructure/github/filters';
+import { generateMarkdownReport } from '@presentation/markdown';
+import { getTranslations } from '@i18n';
+```
+
+Same-layer imports stay relative (`./commands`, `../git/commands`).
+
+Aliases are declared once in `tsconfig.json` paths. Vitest resolves them natively via `resolve.tsconfigPaths`, and `esbuild.config.ts` derives its alias map from those same `tsconfig.json` entries instead of hand-maintaining a copy, so build and type-checking cannot drift apart.
+
+---
+
+## Technology Choices
+
+### Language & Runtime
+
+**TypeScript 7** on **Node.js 24+** - native GitHub Actions runtime support, first-class type safety.
+
+`tsconfig.json` targets ES2022 with `moduleResolution: bundler`, plus `isolatedModules` and `verbatimModuleSyntax` so every file transpiles standalone and import elision stays explicit. Strict type-checking is on by default in the pinned TypeScript version, so the config no longer declares it.
+
+### Tooling
+
+| Tool | Purpose | Why |
+|---|---|---|
+| **Biome** | Linting + formatting | Single tool replaces ESLint + Prettier; significantly faster |
+| **esbuild** | Bundling | 10-100x faster than alternatives; tree shaking; single-file output |
+| **Vitest** | Testing | Modern, ESM-native, better DX than Jest; native `tsconfig` path resolution, no extra plugin |
+| **pnpm** | Package manager | Strict dependency resolution prevents phantom dependencies |
+| **Husky** | Git hooks | Pre-commit formatting and commit linting |
+| **semantic-release** | Versioning & releases | Automated from conventional commits |
+| **commitlint** | Commit message validation | Enforces conventional commits format |
+
+### Dependencies
+
+**Runtime (bundled):**
+
+| Package | Purpose |
+|---|---|
+| `@actions/core` | GitHub Actions I/O (inputs, outputs, logging) |
+| `@actions/github` | Octokit client for GitHub API |
+| `@octokit/plugin-retry` | Automatic retries for transient GitHub API failures |
+| `js-yaml` | YAML config file parsing |
+| `nodemailer` | SMTP email delivery |
+
+The action ships as a single bundled `dist/index.js` with **zero runtime dependencies** for the consumer.
+
+---
+
+## Key Design Decisions
+
+The decisions below are summarized here; the full reasoning, alternatives and costs of each are recorded as [architecture decision records](https://github.com/fbuireu/github-star-tracker/tree/main/docs/adr) in the repository.
+
+### Orphan Branch for Data
+
+Historical snapshots, reports, charts, and badges are stored on an isolated orphan branch (`star-tracker-data` by default). This branch has its own Git history, completely separate from `main`. Why a branch rather than workflow artifacts or an external store: [ADR 0001](https://github.com/fbuireu/github-star-tracker/blob/main/docs/adr/0001-star-data-lives-on-a-dedicated-data-branch.md).
+
+**Benefits:**
+- Main branch stays clean - no data commits polluting your project history
+- Force-push independence - data branch can be reset without affecting code
+- Portable - data travels with the repository
+
+### YAML Configuration
+
+Config files use YAML (parsed via `js-yaml`) with `snake_case` keys. YAML was chosen over JSON for readability and comment support.
+
+### Git Worktrees
+
+The action uses `git worktree add` to create a temporary working directory for the data branch, avoiding `git checkout` which would destroy the current working tree and disrupt concurrent operations.
+
+### Custom i18n
+
+A lightweight custom interpolation engine (`{placeholder}` templates) replaces heavyweight i18n libraries. At ~50 lines of code, it's ~14x smaller than alternatives while covering the requirements: 4 languages, simple key substitution.
+
+### Nodemailer
+
+Supports any SMTP provider without vendor lock-in. The `secure` flag is auto-detected from the port (`465` = SSL, else STARTTLS).
+
+### Dual Chart Systems
+
+- **SVG charts** (`src/presentation/svg-chart.ts`): Self-contained animated SVGs with CSS draw-line animations, committed to the data branch. Render natively in GitHub Markdown.
+- **QuickChart URLs** (`src/presentation/chart.ts`): Chart.js configs encoded as URLs, used in HTML email reports where CSS animations aren't supported.
+
+Both halves are deliberate: the SVG is emitted by hand rather than drawn with a charting library ([ADR 0006](https://github.com/fbuireu/github-star-tracker/blob/main/docs/adr/0006-hand-rendered-svg-charts.md)), and the email path goes through a third-party image service because mail clients will not display inline SVG ([ADR 0010](https://github.com/fbuireu/github-star-tracker/blob/main/docs/adr/0010-quickchart-renders-the-email-charts.md)).
+
+---
+
+## Data & Testing
+
+### Snapshot Retention
+
+Configurable sliding window (default 52 snapshots). Pruning is a pure domain function - `addSnapshot()` returns a new `History` with old entries trimmed. Infrastructure handles serialization only.
+
+### Test Coverage
+
+- **710+ tests** across all layers
+- **98%+ statement coverage**, with a floor of 85% enforced via the threshold in `vitest.config.ts`
+- Coverage excludes: `src/index.ts`, type/constant/default files, test files, and the shared test helpers in `src/shared/tests/`
+- Philosophy: "Mock at the boundary, not in the middle" - real code paths are exercised; only external dependencies (GitHub API, filesystem, Git) are mocked
+
+### Security
+
+- Minimal PAT scopes - `public_repo` sufficient for public-only tracking
+- Ephemeral credential handling - tokens never logged or persisted
+- No sensitive data in outputs - star counts and repo names are already public
+- Stargazer data is opt-in and stores only publicly available information
+
+---
+
+## CI/CD
+
+### Validation Pipeline
+
+```
+pnpm run validate
+  ├── pnpm run check
+  │     ├── pnpm run lint            (biome check --no-errors-on-unmatched .)
+  │     ├── pnpm run typecheck       (tsc --noEmit)
+  │     └── pnpm run test:coverage   (vitest run --coverage)
+  └── pnpm run build                 (tsx esbuild.config.ts)
+```
+
+### Release
+
+[semantic-release](https://semantic-release.gitbook.io/) automates versioning from conventional commits:
+
+- `feat:` → minor bump
+- `fix:` → patch bump
+- `feat!:` / `BREAKING CHANGE:` → major bump
+
+The `v1` tag auto-updates to point to the latest `v1.x.x` release.

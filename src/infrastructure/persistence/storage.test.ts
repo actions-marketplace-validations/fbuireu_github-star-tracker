@@ -1,28 +1,30 @@
-import { execSync } from 'node:child_process';
+import { execFileSync } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import * as core from '@actions/core';
+import type { StargazerMap } from '@domain/stargazers';
+import type { History } from '@domain/types';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import {
+  commitAndPush,
+  pruneCharts,
+  readHistory,
+  readStargazers,
+  writeBadge,
+  writeChart,
+  writeHistory,
+  writeHtmlReport,
+  writeReport,
+  writeStargazers,
+} from './storage';
 
 vi.mock('node:fs');
 vi.mock('node:child_process');
 vi.mock('@actions/core', () => ({
   info: vi.fn(),
   debug: vi.fn(),
+  setSecret: vi.fn(),
 }));
-
-import * as core from '@actions/core';
-import type { StargazerMap } from '@domain/stargazers';
-import type { History } from '@domain/types';
-import {
-  commitAndPush,
-  readHistory,
-  readStargazers,
-  writeBadge,
-  writeChart,
-  writeHistory,
-  writeReport,
-  writeStargazers,
-} from './storage';
 
 describe('readHistory', () => {
   beforeEach(() => {
@@ -59,6 +61,34 @@ describe('readHistory', () => {
 
     expect(result).toEqual(history);
     expect(fs.readFileSync).toHaveBeenCalledWith(path.join('/data', 'stars-data.json'), 'utf8');
+  });
+
+  it('guarantees an array when the stored file has no snapshots key', () => {
+    vi.mocked(fs.existsSync).mockReturnValue(true);
+    vi.mocked(fs.readFileSync).mockReturnValue('{}');
+
+    expect(readHistory('/data')).toEqual({ snapshots: [] });
+  });
+
+  it('guarantees an array when snapshots is not an array', () => {
+    vi.mocked(fs.existsSync).mockReturnValue(true);
+    vi.mocked(fs.readFileSync).mockReturnValue('{"snapshots":"garbage"}');
+
+    expect(readHistory('/data')).toEqual({ snapshots: [] });
+  });
+
+  it('preserves starsAtLastNotification while coercing snapshots', () => {
+    vi.mocked(fs.existsSync).mockReturnValue(true);
+    vi.mocked(fs.readFileSync).mockReturnValue('{"starsAtLastNotification":520}');
+
+    expect(readHistory('/data')).toEqual({ snapshots: [], starsAtLastNotification: 520 });
+  });
+
+  it('fails with an actionable message when the stored file is not valid JSON', () => {
+    vi.mocked(fs.existsSync).mockReturnValue(true);
+    vi.mocked(fs.readFileSync).mockReturnValue('{ not json');
+
+    expect(() => readHistory('/data')).toThrow(/stars-data\.json on the data branch/);
   });
 });
 
@@ -98,6 +128,42 @@ describe('writeReport', () => {
     writeReport({ dataDir: '/data', markdown });
 
     expect(fs.writeFileSync).toHaveBeenCalledWith(path.join('/data', 'README.md'), markdown);
+  });
+});
+
+describe('writeHtmlReport', () => {
+  const originalRunnerTemp = process.env.RUNNER_TEMP;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  afterEach(() => {
+    if (originalRunnerTemp === undefined) {
+      delete process.env.RUNNER_TEMP;
+    } else {
+      process.env.RUNNER_TEMP = originalRunnerTemp;
+    }
+  });
+
+  it('writes the HTML report to RUNNER_TEMP and returns its path', () => {
+    process.env.RUNNER_TEMP = '/runner/tmp';
+    const htmlReport = '<p>Report</p>';
+
+    const filePath = writeHtmlReport({ htmlReport });
+
+    const expectedPath = path.join('/runner/tmp', 'star-tracker-report.html');
+    expect(filePath).toBe(expectedPath);
+    expect(fs.writeFileSync).toHaveBeenCalledWith(expectedPath, htmlReport);
+  });
+
+  it('falls back to the current working directory when RUNNER_TEMP is unset', () => {
+    delete process.env.RUNNER_TEMP;
+    const htmlReport = '<p>Report</p>';
+
+    const filePath = writeHtmlReport({ htmlReport });
+
+    expect(filePath).toBe(path.join(process.cwd(), 'star-tracker-report.html'));
   });
 });
 
@@ -201,7 +267,7 @@ describe('commitAndPush', () => {
   });
 
   it('commits and pushes changes when there are staged changes', () => {
-    vi.mocked(execSync)
+    vi.mocked(execFileSync)
       .mockReturnValueOnce('')
       .mockImplementationOnce(() => {
         throw new Error('Changes detected');
@@ -213,32 +279,100 @@ describe('commitAndPush', () => {
       dataDir: '/data',
       dataBranch: 'star-tracker-data',
       message: 'Update data',
+      token: 'fake-token',
     });
 
+    const basicCredential = Buffer.from('x-access-token:fake-token').toString('base64');
+
     expect(result).toBe(true);
-    expect(execSync).toHaveBeenCalledWith('git add -A', expect.any(Object));
-    expect(execSync).toHaveBeenCalledWith('git commit -m "Update data"', expect.any(Object));
-    expect(execSync).toHaveBeenCalledWith(
-      'git push origin HEAD:star-tracker-data',
+    expect(execFileSync).toHaveBeenCalledWith('git', ['add', '-A'], expect.any(Object));
+    expect(execFileSync).toHaveBeenCalledWith(
+      'git',
+      ['commit', '-m', 'Update data'],
+      expect.any(Object),
+    );
+    expect(core.setSecret).toHaveBeenCalledWith(basicCredential);
+    expect(execFileSync).toHaveBeenCalledWith(
+      'git',
+      [
+        '-c',
+        `http.extraheader=AUTHORIZATION: basic ${basicCredential}`,
+        'push',
+        'origin',
+        'HEAD:star-tracker-data',
+      ],
       expect.any(Object),
     );
     expect(core.info).toHaveBeenCalledWith('Data committed and pushed to star-tracker-data');
   });
 
+  it('passes a commit message with quotes through without breaking the command', () => {
+    vi.mocked(execFileSync)
+      .mockReturnValueOnce('')
+      .mockImplementationOnce(() => {
+        throw new Error('Changes detected');
+      })
+      .mockReturnValueOnce('')
+      .mockReturnValueOnce('');
+
+    commitAndPush({
+      dataDir: '/data',
+      dataBranch: 'star-tracker-data',
+      message: 'Update star data: 12 "total" (+3)',
+      token: 'fake-token',
+    });
+
+    expect(execFileSync).toHaveBeenCalledWith(
+      'git',
+      ['commit', '-m', 'Update star data: 12 "total" (+3)'],
+      expect.any(Object),
+    );
+  });
+
   it('returns false when there are no changes to commit', () => {
-    vi.mocked(execSync).mockReturnValueOnce('').mockReturnValueOnce('');
+    vi.mocked(execFileSync).mockReturnValueOnce('').mockReturnValueOnce('');
 
     const result = commitAndPush({
       dataDir: '/data',
       dataBranch: 'star-tracker-data',
       message: 'Update data',
+      token: 'fake-token',
     });
 
     expect(result).toBe(false);
     expect(core.info).toHaveBeenCalledWith('No data changes to commit');
-    expect(execSync).not.toHaveBeenCalledWith(
-      expect.stringContaining('git commit'),
+    expect(execFileSync).not.toHaveBeenCalledWith(
+      'git',
+      expect.arrayContaining(['commit']),
       expect.any(Object),
     );
+  });
+});
+
+describe('pruneCharts', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('deletes chart files no longer produced and keeps the current ones', () => {
+    vi.mocked(fs.existsSync).mockReturnValue(true);
+    vi.mocked(fs.readdirSync).mockReturnValue([
+      'star-history.svg',
+      'user-gone.svg',
+      'notes.txt',
+    ] as unknown as ReturnType<typeof fs.readdirSync>);
+
+    const removed = pruneCharts({ dataDir: '.data', keep: ['star-history.svg'] });
+
+    expect(removed).toEqual(['user-gone.svg']);
+    expect(fs.rmSync).toHaveBeenCalledWith(path.join('.data', 'charts', 'user-gone.svg'));
+    expect(fs.rmSync).toHaveBeenCalledTimes(1);
+  });
+
+  it('is a no-op when the charts directory does not exist', () => {
+    vi.mocked(fs.existsSync).mockReturnValue(false);
+
+    expect(pruneCharts({ dataDir: '.data', keep: [] })).toEqual([]);
+    expect(fs.rmSync).not.toHaveBeenCalled();
   });
 });

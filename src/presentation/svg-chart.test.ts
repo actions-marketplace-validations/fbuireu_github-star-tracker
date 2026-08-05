@@ -1,3 +1,4 @@
+import { ChartCurve, ChartTheme } from '@config/types';
 import type { ForecastData } from '@domain/forecast';
 import { ForecastMethod } from '@domain/forecast';
 import type { History, Snapshot } from '@domain/types';
@@ -10,6 +11,17 @@ import {
   generateSvgChart,
 } from './svg-chart';
 
+const LINE_PATH_D = /<path d="([^"]+)" fill="none"/;
+const PATH_OPENING = /<path d="M/g;
+const PATH_MOVE_AND_FIRST_SEGMENT = /^M[\d.]+,[\d.]+ L[\d.]+,[\d.]+/;
+const COORDINATE_PAIR = /(\d+(?:\.\d+)?),(\d+(?:\.\d+)?)/g;
+const Y_COORDINATE = /,(\d+(?:\.\d+)?)/g;
+const DATA_POINT_CIRCLE = /<circle/g;
+const CUBIC_BEZIER_COMMAND = / C[\d.]+,[\d.]+ [\d.]+,[\d.]+ [\d.]+,[\d.]+/;
+const THOUSANDS_AXIS_LABEL = />\d+(\.\d+)?K<\/text>/;
+const FEBRUARY_AXIS_LABEL = />Feb \d/;
+const CONSECUTIVE_XML_ATTRIBUTES = /="[^"]*"="[^"]*"/;
+
 function makeSnapshot(timestamp: string, totalStars: number): Snapshot {
   return {
     timestamp,
@@ -20,8 +32,8 @@ function makeSnapshot(timestamp: string, totalStars: number): Snapshot {
 
 function makeHistory(starCounts: number[]): History {
   return {
-    snapshots: starCounts.map((stars, i) => {
-      const date = new Date(2026, 0, i + 1).toISOString();
+    snapshots: starCounts.map((stars, index) => {
+      const date = new Date(2026, 0, index + 1).toISOString();
       return makeSnapshot(date, stars);
     }),
   };
@@ -32,16 +44,16 @@ function makeMultiRepoSnapshot(timestamp: string, repoStars: Record<string, numb
     const [owner, name] = fullName.split('/');
     return { name, owner, fullName, stars };
   });
-  const totalStars = repos.reduce((sum, r) => sum + r.stars, 0);
+  const totalStars = repos.reduce((sum, repo) => sum + repo.stars, 0);
 
   return { timestamp, totalStars, repos };
 }
 
 function makeMultiRepoHistory(snapshots: { repoStars: Record<string, number> }[]): History {
   return {
-    snapshots: snapshots.map((s, i) => {
-      const date = new Date(2026, 0, i + 1).toISOString();
-      return makeMultiRepoSnapshot(date, s.repoStars);
+    snapshots: snapshots.map((snapshot, index) => {
+      const date = new Date(2026, 0, index + 1).toISOString();
+      return makeMultiRepoSnapshot(date, snapshot.repoStars);
     }),
   };
 }
@@ -50,6 +62,13 @@ function expectSvg(result: string | null): string {
   expect(result).not.toBeNull();
 
   return result ?? '';
+}
+
+function linePathYs(svg: string): number[] {
+  const match = svg.match(LINE_PATH_D);
+  const d = match?.[1] ?? '';
+
+  return [...d.matchAll(COORDINATE_PAIR)].map((coordinate) => Number(coordinate[2]));
 }
 
 describe('generateSvgChart', () => {
@@ -62,6 +81,24 @@ describe('generateSvgChart', () => {
     const history = makeHistory([10]);
     const result = generateSvgChart({ history, locale: 'en' });
     expect(result).toBeNull();
+  });
+
+  it('labels the x-axis by year for multi-year histories', () => {
+    const history: History = {
+      snapshots: [
+        makeSnapshot('2023-02-01T12:00:00Z', 10),
+        makeSnapshot('2023-09-01T12:00:00Z', 40),
+        makeSnapshot('2024-04-01T12:00:00Z', 90),
+        makeSnapshot('2025-01-01T12:00:00Z', 150),
+      ],
+    };
+
+    const svg = expectSvg(generateSvgChart({ history, locale: 'en' }));
+
+    expect(svg).toContain('>2023<');
+    expect(svg).toContain('>2024<');
+    expect(svg).toContain('>2025<');
+    expect(svg).not.toMatch(FEBRUARY_AXIS_LABEL);
   });
 
   it('generates valid SVG structure', () => {
@@ -88,6 +125,29 @@ describe('generateSvgChart', () => {
     expect(result).toContain('Star History');
   });
 
+  it('uses a prefers-color-scheme media query for the auto theme', () => {
+    const history = makeHistory([10, 20, 30]);
+    const result = expectSvg(generateSvgChart({ history, locale: 'en' }));
+
+    expect(result).toContain('@media (prefers-color-scheme: dark)');
+  });
+
+  it('forces the light palette without a media query for the light theme', () => {
+    const history = makeHistory([10, 20, 30]);
+    const result = expectSvg(generateSvgChart({ history, locale: 'en', theme: 'light' }));
+
+    expect(result).not.toContain('prefers-color-scheme');
+    expect(result).toContain('.chart-bg { fill: #fff; }');
+  });
+
+  it('forces the dark palette without a media query for the dark theme', () => {
+    const history = makeHistory([10, 20, 30]);
+    const result = expectSvg(generateSvgChart({ history, locale: 'en', theme: 'dark' }));
+
+    expect(result).not.toContain('prefers-color-scheme');
+    expect(result).toContain('.chart-bg { fill: #0d1117; }');
+  });
+
   it('includes CSS animations', () => {
     const history = makeHistory([10, 20, 30]);
     const result = generateSvgChart({ history, locale: 'en' });
@@ -98,12 +158,48 @@ describe('generateSvgChart', () => {
     expect(result).toContain('stroke-dashoffset');
   });
 
+  it('omits CSS animations when animation is disabled', () => {
+    const history = makeHistory([10, 20, 30]);
+    const result = expectSvg(generateSvgChart({ history, locale: 'en', animate: false }));
+
+    expect(result).not.toContain('@keyframes');
+    expect(result).not.toContain('animation:');
+    expect(result).not.toContain('stroke-dashoffset');
+    expect(result).toContain('<circle');
+  });
+
   it('includes data points as circles', () => {
     const history = makeHistory([10, 20, 30, 40, 50]);
     const result = expectSvg(generateSvgChart({ history, locale: 'en' }));
-    const circleCount = (result.match(/<circle/g) || []).length;
+    const circleCount = (result.match(DATA_POINT_CIRCLE) || []).length;
 
     expect(circleCount).toBe(5);
+  });
+
+  it('overlays a dashed trend line when trendLine is enabled', () => {
+    const history = makeHistory([10, 20, 30, 40, 50]);
+    const plain = expectSvg(generateSvgChart({ history, locale: 'en' }));
+    const withTrend = expectSvg(generateSvgChart({ history, locale: 'en', trendLine: true }));
+
+    expect(plain).not.toContain('stroke-dasharray="8,4"');
+    expect(withTrend).toContain('stroke-dasharray="8,4"');
+  });
+
+  it('draws the trend line with the dark neutral when theme is dark', () => {
+    const history = makeHistory([10, 20, 30, 40, 50]);
+    const result = expectSvg(
+      generateSvgChart({ history, locale: 'en', trendLine: true, theme: ChartTheme.DARK }),
+    );
+
+    expect(result).toContain(DARK_PALETTE.neutral);
+    expect(result).not.toContain(`stroke="${LIGHT_PALETTE.neutral}"`);
+  });
+
+  it('omits data point circles when showPoints is disabled', () => {
+    const history = makeHistory([10, 20, 30, 40, 50]);
+    const result = expectSvg(generateSvgChart({ history, locale: 'en', showPoints: false }));
+
+    expect(result).not.toContain('<circle');
   });
 
   it('includes smooth path with cubic bezier curves', () => {
@@ -111,7 +207,7 @@ describe('generateSvgChart', () => {
     const result = expectSvg(generateSvgChart({ history, locale: 'en' }));
 
     expect(result).toContain('<path');
-    expect(result).toMatch(/ C[\d.]+,[\d.]+ [\d.]+,[\d.]+ [\d.]+,[\d.]+/);
+    expect(result).toMatch(CUBIC_BEZIER_COMMAND);
   });
 
   it('uses project accent color', () => {
@@ -150,6 +246,68 @@ describe('generateSvgChart', () => {
     expect(result).toContain('stroke-dasharray="6,6"');
   });
 
+  it('still draws milestones for repos above the ten-thousand mark', () => {
+    const history = makeHistory([12_000, 60_000, 120_000]);
+    const result = expectSvg(generateSvgChart({ history, locale: 'en' }));
+
+    expect(result).toContain('50K ★');
+    expect(result).toContain('100K ★');
+    expect(result).toContain('stroke-dasharray="6,6"');
+  });
+
+  it('floors the Y-axis at zero when beginAtZero is enabled', () => {
+    const history = makeHistory([80, 120, 150]);
+    const zoomed = expectSvg(generateSvgChart({ history, locale: 'en' }));
+    const fromZero = expectSvg(generateSvgChart({ history, locale: 'en', beginAtZero: true }));
+
+    expect(zoomed).not.toContain('>0</text>');
+    expect(fromZero).toContain('>0</text>');
+  });
+
+  it('omits milestone lines when milestones are disabled', () => {
+    const history = makeHistory([80, 120, 150]);
+    const result = expectSvg(generateSvgChart({ history, locale: 'en', milestones: false }));
+
+    expect(result).not.toContain('100 ★');
+    expect(result).not.toContain('stroke-dasharray="6,6"');
+  });
+
+  it('draws custom milestone lines instead of the defaults', () => {
+    const history = makeHistory([80, 120, 150]);
+    const result = expectSvg(
+      generateSvgChart({ history, locale: 'en', customMilestones: [90, 110] }),
+    );
+
+    expect(result).toContain('90 ★');
+    expect(result).toContain('110 ★');
+    expect(result).not.toContain('100 ★');
+  });
+
+  it('falls back to default milestones when the custom list is empty', () => {
+    const history = makeHistory([80, 120, 150]);
+    const result = expectSvg(generateSvgChart({ history, locale: 'en', customMilestones: [] }));
+
+    expect(result).toContain('100 ★');
+  });
+
+  it('omits custom milestone lines when milestones are disabled', () => {
+    const history = makeHistory([80, 120, 150]);
+    const result = expectSvg(
+      generateSvgChart({ history, locale: 'en', milestones: false, customMilestones: [90, 110] }),
+    );
+
+    expect(result).not.toContain('90 ★');
+    expect(result).not.toContain('stroke-dasharray="6,6"');
+  });
+
+  it('formats large axis values compactly so labels do not overflow', () => {
+    const history = makeHistory([10_000, 30_000, 50_000]);
+    const result = expectSvg(generateSvgChart({ history, locale: 'en' }));
+
+    expect(result).toMatch(THOUSANDS_AXIS_LABEL);
+    expect(result).not.toContain('50,000');
+  });
+
   it('does not include milestone lines outside data range', () => {
     const history = makeHistory([10, 20, 30]);
     const result = expectSvg(generateSvgChart({ history, locale: 'en' }));
@@ -159,12 +317,23 @@ describe('generateSvgChart', () => {
   });
 
   it('limits to 30 data points for large histories', () => {
-    const stars = Array.from({ length: 50 }, (_, i) => 10 + i);
+    const stars = Array.from({ length: 50 }, (_, index) => 10 + index);
     const history = makeHistory(stars);
     const result = expectSvg(generateSvgChart({ history, locale: 'en' }));
-    const circleCount = (result.match(/<circle/g) || []).length;
+    const circleCount = (result.match(DATA_POINT_CIRCLE) || []).length;
 
     expect(circleCount).toBe(30);
+  });
+
+  it('anchors the line to the baseline so it starts from zero, not mid-air', () => {
+    const history = makeHistory([5, 20, 40]);
+    const result = expectSvg(generateSvgChart({ history, locale: 'en' }));
+    const ys = linePathYs(result);
+    const baselineY = 400 - 50;
+
+    expect(ys[0]).toBe(baselineY);
+    expect(ys[1]).toBeLessThan(baselineY);
+    expect((result.match(DATA_POINT_CIRCLE) || []).length).toBe(3);
   });
 
   it('handles equal star counts without errors', () => {
@@ -230,6 +399,168 @@ describe('generateSvgChart', () => {
 
     expect(result).toContain(`stroke="${COLORS.accent}"`);
     expect(result).toContain(`fill="${COLORS.accent}"`);
+  });
+
+  it('applies a custom line color', () => {
+    const history = makeHistory([10, 20, 30]);
+    const result = expectSvg(generateSvgChart({ history, locale: 'en', lineColor: '#6f42c1' }));
+
+    expect(result).toContain('stroke="#6f42c1"');
+    expect(result).not.toContain(COLORS.accent);
+  });
+
+  it('applies a custom line width to data lines', () => {
+    const history = makeHistory([10, 20, 30]);
+    const result = expectSvg(generateSvgChart({ history, locale: 'en', lineWidth: 5 }));
+
+    expect(result).toContain('stroke-width="5"');
+  });
+
+  it('uses default accent color and width when no overrides given', () => {
+    const history = makeHistory([10, 20, 30]);
+    const result = expectSvg(generateSvgChart({ history, locale: 'en' }));
+
+    expect(result).toContain(`stroke="${COLORS.accent}"`);
+    expect(result).toContain('stroke-width="2.5"');
+  });
+
+  it('does not let the smoothed line overshoot below the axis on valleys', () => {
+    const history = makeHistory([5, 5, 100, 5, 5]);
+    const result = expectSvg(generateSvgChart({ history, locale: 'en' }));
+    const ys = linePathYs(result);
+
+    // bottom axis is at CHART.height - margin.bottom = 350, top axis at margin.top = 50
+    expect(Math.max(...ys)).toBeLessThanOrEqual(350);
+    expect(Math.min(...ys)).toBeGreaterThanOrEqual(50);
+  });
+
+  it('does not overshoot above the top axis on spikes', () => {
+    const history = makeHistory([2, 3, 4, 5, 1000]);
+    const result = expectSvg(generateSvgChart({ history, locale: 'en' }));
+    const ys = linePathYs(result);
+
+    expect(Math.max(...ys)).toBeLessThanOrEqual(350);
+    expect(Math.min(...ys)).toBeGreaterThanOrEqual(50);
+  });
+
+  it('limits points to maxPoints', () => {
+    const history = makeHistory([10, 20, 30, 40, 50]);
+    const result = expectSvg(generateSvgChart({ history, locale: 'en', maxPoints: 3 }));
+
+    expect((result.match(DATA_POINT_CIRCLE) || []).length).toBe(3);
+  });
+
+  it('plots the full history when maxPoints is 0', () => {
+    const stars = Array.from({ length: 40 }, (_, index) => 10 + index);
+    const history = makeHistory(stars);
+    const result = expectSvg(generateSvgChart({ history, locale: 'en', maxPoints: 0 }));
+
+    expect((result.match(DATA_POINT_CIRCLE) || []).length).toBe(40);
+  });
+
+  it('renders y-axis labels on the left by default', () => {
+    const history = makeHistory([10, 20, 30]);
+    const result = expectSvg(generateSvgChart({ history, locale: 'en' }));
+
+    expect(result).toContain('text-anchor="end"');
+    expect(result).toContain('<line x1="60" y1="50" x2="60"');
+  });
+
+  it('renders y-axis labels and axis line on the right when configured', () => {
+    const history = makeHistory([10, 20, 30]);
+    const result = expectSvg(generateSvgChart({ history, locale: 'en', yAxisSide: 'right' }));
+
+    expect(result).toContain('x="778" y=');
+    expect(result).toContain('text-anchor="start"');
+    expect(result).toContain('<line x1="770" y1="50" x2="770"');
+    expect(result).not.toContain('text-anchor="end"');
+  });
+
+  it('uses smooth cubic curves by default', () => {
+    const history = makeHistory([10, 20, 30, 40]);
+    const result = expectSvg(generateSvgChart({ history, locale: 'en' }));
+
+    expect(result).toMatch(CUBIC_BEZIER_COMMAND);
+  });
+
+  it('draws straight segments when smoothing is disabled', () => {
+    const history = makeHistory([10, 20, 30, 40]);
+    const result = expectSvg(generateSvgChart({ history, locale: 'en', smoothing: false }));
+    const linePath = result.match(LINE_PATH_D)?.[1] ?? '';
+
+    expect(linePath).toContain(' L');
+    expect(linePath).not.toContain(' C');
+  });
+
+  const curveYsOf = (svg: string): number[] => {
+    const d = svg.match(LINE_PATH_D)?.[1] ?? '';
+    const body = d.replace(PATH_MOVE_AND_FIRST_SEGMENT, '');
+    return [...body.matchAll(Y_COORDINATE)].map((coordinate) => Number(coordinate[1]));
+  };
+
+  it('rounds the catmull-rom curve past the data point at an asymmetric valley', () => {
+    const history = makeHistory([100, 5, 200]);
+    const smooth = curveYsOf(
+      expectSvg(generateSvgChart({ history, locale: 'en', curve: ChartCurve.CATMULL_ROM })),
+    );
+    const straight = curveYsOf(
+      expectSvg(generateSvgChart({ history, locale: 'en', smoothing: false })),
+    );
+
+    expect(Math.max(...smooth)).toBeGreaterThan(Math.max(...straight));
+    expect(Math.max(...smooth)).toBeLessThanOrEqual(350);
+  });
+
+  it('does not overshoot the data point at a valley with the monotone curve', () => {
+    const history = makeHistory([100, 5, 200]);
+    const smooth = curveYsOf(
+      expectSvg(generateSvgChart({ history, locale: 'en', curve: ChartCurve.MONOTONE })),
+    );
+    const straight = curveYsOf(
+      expectSvg(generateSvgChart({ history, locale: 'en', smoothing: false })),
+    );
+
+    expect(Math.max(...smooth)).toBeLessThanOrEqual(Math.max(...straight) + 0.01);
+  });
+
+  it('defaults to the monotone curve, which does not overshoot', () => {
+    const history = makeHistory([100, 5, 200]);
+    const defaulted = curveYsOf(expectSvg(generateSvgChart({ history, locale: 'en' })));
+    const monotone = curveYsOf(
+      expectSvg(generateSvgChart({ history, locale: 'en', curve: ChartCurve.MONOTONE })),
+    );
+
+    expect(defaulted).toEqual(monotone);
+  });
+
+  it('keeps plateaus flat and never dips below them with the monotone curve', () => {
+    const history = makeHistory([1, 1, 1, 2, 3, 3, 3]);
+    const ys = curveYsOf(
+      expectSvg(generateSvgChart({ history, locale: 'en', curve: ChartCurve.MONOTONE })),
+    );
+
+    expect(Math.max(...ys)).toBeLessThanOrEqual(350);
+  });
+
+  it('rounds corners with quadratic segments for the rounded-step curve', () => {
+    const history = makeHistory([1, 1, 1, 2, 3, 3, 3]);
+    const result = expectSvg(
+      generateSvgChart({ history, locale: 'en', curve: ChartCurve.ROUNDED_STEP }),
+    );
+    const linePath = result.match(LINE_PATH_D)?.[1] ?? '';
+
+    expect(linePath).toContain(' Q');
+  });
+
+  it('uses cubic segments without overshoot for the cubic-bezier curve', () => {
+    const history = makeHistory([1, 1, 1, 2, 3, 3, 3]);
+    const result = expectSvg(
+      generateSvgChart({ history, locale: 'en', curve: ChartCurve.CUBIC_BEZIER }),
+    );
+    const linePath = result.match(LINE_PATH_D)?.[1] ?? '';
+
+    expect(linePath).toContain(' C');
+    expect(Math.max(...curveYsOf(result))).toBeLessThanOrEqual(350);
   });
 });
 
@@ -322,6 +653,23 @@ describe('generatePerRepoSvgChart', () => {
     );
 
     expect(result).not.toContain('100 ★');
+  });
+
+  it('applies a custom line color', () => {
+    const history = makeMultiRepoHistory([
+      { repoStars: { 'user/repo-a': 10 } },
+      { repoStars: { 'user/repo-a': 20 } },
+    ]);
+    const result = expectSvg(
+      generatePerRepoSvgChart({
+        history,
+        repoFullName: 'user/repo-a',
+        locale: 'en',
+        lineColor: '#6f42c1',
+      }),
+    );
+
+    expect(result).toContain('stroke="#6f42c1"');
   });
 });
 
@@ -419,19 +767,23 @@ describe('generateComparisonSvgChart', () => {
     const repoStars: Record<string, number> = {};
     const repoNames: string[] = [];
 
-    for (let i = 0; i < 15; i++) {
-      const name = `user/repo-${i}`;
-      repoStars[name] = 10 + i;
+    for (let index = 0; index < 15; index++) {
+      const name = `user/repo-${index}`;
+      repoStars[name] = 10 + index;
       repoNames.push(name);
     }
 
     const history = makeMultiRepoHistory([
       { repoStars },
-      { repoStars: Object.fromEntries(Object.entries(repoStars).map(([k, v]) => [k, v + 5])) },
+      {
+        repoStars: Object.fromEntries(
+          Object.entries(repoStars).map(([name, stars]) => [name, stars + 5]),
+        ),
+      },
     ]);
 
     const result = expectSvg(generateComparisonSvgChart({ history, repoNames, locale: 'en' }));
-    const pathCount = (result.match(/<path d="M/g) || []).length;
+    const pathCount = (result.match(PATH_OPENING) || []).length;
 
     expect(pathCount).toBeLessThanOrEqual(10);
   });
@@ -451,6 +803,25 @@ describe('generateComparisonSvgChart', () => {
     );
 
     expect(result).toContain('My Comparison');
+  });
+
+  it('keeps the comparison palette and applies a custom line width', () => {
+    const history = makeMultiRepoHistory([
+      { repoStars: { 'user/repo-a': 10, 'user/repo-b': 5 } },
+      { repoStars: { 'user/repo-a': 15, 'user/repo-b': 8 } },
+    ]);
+    const result = expectSvg(
+      generateComparisonSvgChart({
+        history,
+        repoNames: ['user/repo-a', 'user/repo-b'],
+        locale: 'en',
+        lineWidth: 5,
+      }),
+    );
+
+    expect(result).toContain(CHART_COMPARISON_COLORS[0]);
+    expect(result).toContain(CHART_COMPARISON_COLORS[1]);
+    expect(result).toContain('stroke-width="5"');
   });
 });
 
@@ -480,6 +851,20 @@ describe('generateForecastSvgChart', () => {
     },
     repos: [],
   };
+
+  it('draws the forecast series with the dark palette when theme is dark', () => {
+    const result = generateForecastSvgChart({
+      history: makeHistory([10, 20, 30]),
+      forecastData,
+      locale: 'en',
+      theme: ChartTheme.DARK,
+    });
+
+    expect(result).toContain(DARK_PALETTE.positive);
+    expect(result).toContain(DARK_PALETTE.negative);
+    expect(result).not.toContain(LIGHT_PALETTE.positive);
+    expect(result).not.toContain(LIGHT_PALETTE.negative);
+  });
 
   it('returns null for empty history', () => {
     const result = generateForecastSvgChart({
@@ -535,7 +920,6 @@ describe('generateForecastSvgChart', () => {
   it('generates valid XML attributes in legend for dashed datasets', () => {
     const history = makeHistory([10, 20, 30]);
     const result = expectSvg(generateForecastSvgChart({ history, forecastData, locale: 'en' }));
-    const CONSECUTIVE_XML_ATTRIBUTES = /="[^"]*"="[^"]*"/;
 
     expect(result).not.toMatch(CONSECUTIVE_XML_ATTRIBUTES);
   });
@@ -574,5 +958,16 @@ describe('generateForecastSvgChart', () => {
 
     expect(enResult).toContain('Mar');
     expect(esResult).toContain('mar');
+  });
+
+  it('applies custom color to the historical series only, keeping trend colors', () => {
+    const history = makeHistory([10, 20, 30]);
+    const result = expectSvg(
+      generateForecastSvgChart({ history, forecastData, locale: 'en', lineColor: '#6f42c1' }),
+    );
+
+    expect(result).toContain('#6f42c1');
+    expect(result).toContain(COLORS.positive);
+    expect(result).toContain(COLORS.negative);
   });
 });

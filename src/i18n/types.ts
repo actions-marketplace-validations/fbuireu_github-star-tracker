@@ -29,6 +29,7 @@ export interface Translations {
     topRepositories: string;
     byRepository: string;
     individualRepoCharts: string;
+    trendLine: string;
     badges: {
       new: string;
     };
@@ -43,6 +44,12 @@ export interface Translations {
     down: string;
     stable: string;
   };
+  velocity: {
+    sectionTitle: string;
+    starsPerDay: string;
+    growth: string;
+    projection: string;
+  };
   footer: {
     generated: string;
     madeBy: string;
@@ -53,6 +60,7 @@ export interface Translations {
     starredOn: string;
     noNewStargazers: string;
     stargazerCount: string;
+    sampledNote: string;
   };
   forecast: {
     sectionTitle: string;

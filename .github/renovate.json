@@ -1,11 +1,32 @@
 {
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
-  "extends": ["config:recommended", ":dependencyDashboard", "customManagers:biomeVersions"],
+  "extends": ["config:recommended", ":dependencyDashboard", "customManagers:biomeVersions", ":enableVulnerabilityAlerts"],
   "labels": ["dependencies", "renovate", "bot"],
-  "schedule": ["on the 1st day of the month", "on the 15th day of the month"],
+  "schedule": ["on the 1st and 15th day of the month"],
+  "minimumReleaseAge": "4 days",
+  "pinDigests": true,
+  "rangeStrategy": "pin",
+  "automergeStrategy": "squash",
+  "lockFileMaintenance": {
+    "enabled": true,
+    "automerge": true,
+    "addLabels": ["lock-maintenance"],
+    "schedule": ["on the 1st and 15th day of the month"]
+  },
   "assigneesFromCodeOwners": true,
   "reviewersFromCodeOwners": true,
+  "vulnerabilityAlerts": {
+    "schedule": ["at any time"],
+    "labels": ["security", "vulnerability"]
+  },
+  "osvVulnerabilityAlerts": true,
   "packageRules": [
+    {
+      "matchUpdateTypes": ["pin", "pinDigest", "digest"],
+      "automerge": true,
+      "automergeType": "pr",
+      "addLabels": ["pin-update"]
+    },
     {
       "matchUpdateTypes": ["patch"],
       "automerge": true,
@@ -22,6 +43,10 @@
       "matchUpdateTypes": ["major"],
       "addLabels": ["major-update"],
       "automerge": false
+    },
+    {
+      "matchDepNames": ["node"],
+      "allowedVersions": "/^[0-9]*[02468]\\./",
     }
   ]
 }

@@ -1,15 +1,11 @@
+import { makeStargazer } from '@shared/tests';
 import { describe, expect, it } from 'vitest';
 import type { RepoStargazers, Stargazer, StargazerMap } from './stargazers';
-import { buildStargazerMap, diffStargazers } from './stargazers';
 
-function makeStar(login: string, date = '2026-01-15'): Stargazer {
-  return {
-    login,
-    avatarUrl: `https://avatars.githubusercontent.com/u/${login}`,
-    profileUrl: `https://github.com/${login}`,
-    starredAt: date,
-  };
-}
+const makeStar = (login: string, starredAt = '2026-01-15'): Stargazer =>
+  makeStargazer({ login, starredAt });
+
+import { buildStargazerMap, diffStargazers } from './stargazers';
 
 describe('diffStargazers', () => {
   it('treats all as new when previous map is empty (first run)', () => {
@@ -20,7 +16,10 @@ describe('diffStargazers', () => {
 
     expect(result.totalNew).toBe(2);
     expect(result.entries).toHaveLength(1);
-    expect(result.entries[0].newStargazers.map((s) => s.login)).toEqual(['alice', 'bob']);
+    expect(result.entries[0].newStargazers.map((stargazer) => stargazer.login)).toEqual([
+      'alice',
+      'bob',
+    ]);
   });
 
   it('returns empty when no changes', () => {
@@ -49,7 +48,10 @@ describe('diffStargazers', () => {
     const result = diffStargazers({ current, previousMap });
 
     expect(result.totalNew).toBe(2);
-    expect(result.entries[0].newStargazers.map((s) => s.login)).toEqual(['bob', 'charlie']);
+    expect(result.entries[0].newStargazers.map((stargazer) => stargazer.login)).toEqual([
+      'bob',
+      'charlie',
+    ]);
   });
 
   it('sorts new stargazers by date descending', () => {
@@ -65,7 +67,7 @@ describe('diffStargazers', () => {
     ];
     const result = diffStargazers({ current, previousMap: {} });
 
-    expect(result.entries[0].newStargazers.map((s) => s.login)).toEqual([
+    expect(result.entries[0].newStargazers.map((stargazer) => stargazer.login)).toEqual([
       'bob',
       'charlie',
       'alice',
@@ -81,6 +83,27 @@ describe('diffStargazers', () => {
 
     expect(result.totalNew).toBe(1);
     expect(result.entries[0].repoFullName).toBe('user/new-repo');
+  });
+
+  it('excludes sampled repos from the diff and reports them in sampledRepos', () => {
+    const current: RepoStargazers[] = [
+      { repoFullName: 'user/repo-a', stargazers: [makeStar('alice')] },
+      { repoFullName: 'user/huge', stargazers: [makeStar('bob')], sampled: true },
+    ];
+    const result = diffStargazers({ current, previousMap: {} });
+
+    expect(result.totalNew).toBe(1);
+    expect(result.entries.map((entry) => entry.repoFullName)).toEqual(['user/repo-a']);
+    expect(result.sampledRepos).toEqual(['user/huge']);
+  });
+
+  it('omits sampledRepos when no repo is sampled', () => {
+    const current: RepoStargazers[] = [
+      { repoFullName: 'user/repo-a', stargazers: [makeStar('alice')] },
+    ];
+    const result = diffStargazers({ current, previousMap: {} });
+
+    expect(result.sampledRepos).toBeUndefined();
   });
 
   it('handles multiple repos with mixed changes', () => {
@@ -106,7 +129,7 @@ describe('buildStargazerMap', () => {
       { repoFullName: 'user/repo-a', stargazers: [makeStar('alice'), makeStar('bob')] },
       { repoFullName: 'user/repo-b', stargazers: [makeStar('charlie')] },
     ];
-    const map = buildStargazerMap(repoStargazers);
+    const map = buildStargazerMap({ repoStargazers, previousMap: {} });
 
     expect(map).toEqual({
       'user/repo-a': ['alice', 'bob'],
@@ -115,7 +138,50 @@ describe('buildStargazerMap', () => {
   });
 
   it('returns empty map for empty input', () => {
-    const map = buildStargazerMap([]);
+    const map = buildStargazerMap({ repoStargazers: [], previousMap: {} });
+
+    expect(map).toEqual({});
+  });
+
+  it('skips sampled repos so partial lists do not corrupt the next diff', () => {
+    const repoStargazers: RepoStargazers[] = [
+      { repoFullName: 'user/repo-a', stargazers: [makeStar('alice')] },
+      { repoFullName: 'user/huge', stargazers: [makeStar('bob')], sampled: true },
+    ];
+    const map = buildStargazerMap({ repoStargazers, previousMap: {} });
+
+    expect(map).toEqual({ 'user/repo-a': ['alice'] });
+  });
+
+  it('carries previously known logins forward for a sampled repo', () => {
+    const repoStargazers: RepoStargazers[] = [
+      { repoFullName: 'user/huge', stargazers: [makeStar('bob')], sampled: true },
+    ];
+    const map = buildStargazerMap({
+      repoStargazers,
+      previousMap: { 'user/huge': ['alice', 'bob'] },
+    });
+
+    expect(map).toEqual({ 'user/huge': ['alice', 'bob'] });
+  });
+
+  it('carries previously known logins forward when a fetch came back incomplete', () => {
+    const repoStargazers: RepoStargazers[] = [
+      { repoFullName: 'user/repo-a', stargazers: [], incomplete: true },
+    ];
+    const map = buildStargazerMap({
+      repoStargazers,
+      previousMap: { 'user/repo-a': ['alice', 'bob'] },
+    });
+
+    expect(map).toEqual({ 'user/repo-a': ['alice', 'bob'] });
+  });
+
+  it('does not resurrect a repo that has no previous entry', () => {
+    const repoStargazers: RepoStargazers[] = [
+      { repoFullName: 'user/repo-a', stargazers: [], incomplete: true },
+    ];
+    const map = buildStargazerMap({ repoStargazers, previousMap: {} });
 
     expect(map).toEqual({});
   });

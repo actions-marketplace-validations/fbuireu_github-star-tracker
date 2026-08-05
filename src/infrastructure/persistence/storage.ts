@@ -5,15 +5,53 @@ import type { StargazerMap } from '@domain/stargazers';
 import type { History } from '@domain/types';
 import { execute } from '../git/commands';
 
-export function readHistory(dataDir: string): History {
-  const filePath = path.join(dataDir, 'stars-data.json');
+const DATA_FILES = {
+  history: 'stars-data.json',
+  stargazers: 'stargazers.json',
+  report: 'README.md',
+  badge: 'stars-badge.svg',
+  csv: 'stars-data.csv',
+  htmlReport: 'star-tracker-report.html',
+  chartsDir: 'charts',
+} as const;
+
+interface ReadJsonFileParams<T> {
+  filePath: string;
+  fallback: T;
+}
+
+function readJsonFile<T>({ filePath, fallback }: ReadJsonFileParams<T>): T {
   if (!fs.existsSync(filePath)) {
-    return { snapshots: [] };
+    return fallback;
   }
 
-  const content = fs.readFileSync(filePath, 'utf8');
+  const contents = fs.readFileSync(filePath, 'utf8');
 
-  return JSON.parse(content) as History;
+  try {
+    return JSON.parse(contents) as T;
+  } catch (error) {
+    throw new Error(
+      `${path.basename(filePath)} on the data branch is not valid JSON (${(error as Error).message}). Fix or delete the file on that branch and re-run.`,
+    );
+  }
+}
+
+interface WriteJsonFileParams {
+  filePath: string;
+  data: unknown;
+}
+
+function writeJsonFile({ filePath, data }: WriteJsonFileParams): void {
+  fs.writeFileSync(filePath, JSON.stringify(data, null, 2));
+}
+
+export function readHistory(dataDir: string): History {
+  const raw = readJsonFile<Partial<History>>({
+    filePath: path.join(dataDir, DATA_FILES.history),
+    fallback: {},
+  });
+
+  return { ...raw, snapshots: Array.isArray(raw.snapshots) ? raw.snapshots : [] };
 }
 
 interface WriteHistoryParams {
@@ -22,9 +60,7 @@ interface WriteHistoryParams {
 }
 
 export function writeHistory({ dataDir, history }: WriteHistoryParams): void {
-  const filePath = path.join(dataDir, 'stars-data.json');
-
-  fs.writeFileSync(filePath, JSON.stringify(history, null, 2));
+  writeJsonFile({ filePath: path.join(dataDir, DATA_FILES.history), data: history });
 }
 
 interface WriteReportParams {
@@ -33,7 +69,7 @@ interface WriteReportParams {
 }
 
 export function writeReport({ dataDir, markdown }: WriteReportParams): void {
-  const filePath = path.join(dataDir, 'README.md');
+  const filePath = path.join(dataDir, DATA_FILES.report);
 
   fs.writeFileSync(filePath, markdown);
 }
@@ -44,7 +80,7 @@ interface WriteBadgeParams {
 }
 
 export function writeBadge({ dataDir, svg }: WriteBadgeParams): void {
-  const filePath = path.join(dataDir, 'stars-badge.svg');
+  const filePath = path.join(dataDir, DATA_FILES.badge);
 
   fs.writeFileSync(filePath, svg);
 }
@@ -56,7 +92,7 @@ interface WriteChartParams {
 }
 
 export function writeChart({ dataDir, filename, svg }: WriteChartParams): void {
-  const chartsDir = path.join(dataDir, 'charts');
+  const chartsDir = path.join(dataDir, DATA_FILES.chartsDir);
 
   if (!fs.existsSync(chartsDir)) {
     fs.mkdirSync(chartsDir, { recursive: true });
@@ -66,16 +102,37 @@ export function writeChart({ dataDir, filename, svg }: WriteChartParams): void {
   fs.writeFileSync(filePath, svg);
 }
 
-export function readStargazers(dataDir: string): StargazerMap {
-  const filePath = path.join(dataDir, 'stargazers.json');
+interface PruneChartsParams {
+  dataDir: string;
+  keep: string[];
+}
 
-  if (!fs.existsSync(filePath)) {
-    return {};
+export function pruneCharts({ dataDir, keep }: PruneChartsParams): string[] {
+  const chartsDir = path.join(dataDir, DATA_FILES.chartsDir);
+
+  if (!fs.existsSync(chartsDir)) return [];
+
+  const kept = new Set(keep);
+  const removed = fs
+    .readdirSync(chartsDir)
+    .filter((filename) => filename.endsWith('.svg') && !kept.has(filename));
+
+  for (const filename of removed) {
+    fs.rmSync(path.join(chartsDir, filename));
   }
 
-  const content = fs.readFileSync(filePath, 'utf8');
+  if (removed.length > 0) {
+    core.info(`Removed ${removed.length} chart(s) no longer produced: ${removed.join(', ')}`);
+  }
 
-  return JSON.parse(content) as StargazerMap;
+  return removed;
+}
+
+export function readStargazers(dataDir: string): StargazerMap {
+  return readJsonFile<StargazerMap>({
+    filePath: path.join(dataDir, DATA_FILES.stargazers),
+    fallback: {},
+  });
 }
 
 interface WriteStargazersParams {
@@ -84,9 +141,20 @@ interface WriteStargazersParams {
 }
 
 export function writeStargazers({ dataDir, stargazerMap }: WriteStargazersParams): void {
-  const filePath = path.join(dataDir, 'stargazers.json');
+  writeJsonFile({ filePath: path.join(dataDir, DATA_FILES.stargazers), data: stargazerMap });
+}
 
-  fs.writeFileSync(filePath, JSON.stringify(stargazerMap, null, 2));
+interface WriteHtmlReportParams {
+  htmlReport: string;
+}
+
+export function writeHtmlReport({ htmlReport }: WriteHtmlReportParams): string {
+  const outputDir = process.env.RUNNER_TEMP || process.cwd();
+  const filePath = path.join(outputDir, DATA_FILES.htmlReport);
+
+  fs.writeFileSync(filePath, htmlReport);
+
+  return filePath;
 }
 
 interface WriteCsvParams {
@@ -95,7 +163,7 @@ interface WriteCsvParams {
 }
 
 export function writeCsv({ dataDir, csv }: WriteCsvParams): void {
-  const filePath = path.join(dataDir, 'stars-data.csv');
+  const filePath = path.join(dataDir, DATA_FILES.csv);
 
   fs.writeFileSync(filePath, csv);
 }
@@ -104,15 +172,21 @@ interface CommitAndPushParams {
   dataDir: string;
   dataBranch: string;
   message: string;
+  token: string;
 }
 
-export function commitAndPush({ dataDir, dataBranch, message }: CommitAndPushParams): boolean {
+export function commitAndPush({
+  dataDir,
+  dataBranch,
+  message,
+  token,
+}: CommitAndPushParams): boolean {
   const cwd = path.resolve(dataDir);
 
-  execute({ cmd: 'git add -A', options: { cwd } });
+  execute({ args: ['add', '-A'], options: { cwd } });
 
   try {
-    execute({ cmd: 'git diff --cached --quiet', options: { cwd } });
+    execute({ args: ['diff', '--cached', '--quiet'], options: { cwd } });
 
     core.info('No data changes to commit');
 
@@ -121,8 +195,21 @@ export function commitAndPush({ dataDir, dataBranch, message }: CommitAndPushPar
     core.debug('Staged changes detected, proceeding with commit');
   }
 
-  execute({ cmd: `git commit -m "${message}"`, options: { cwd } });
-  execute({ cmd: `git push origin HEAD:${dataBranch}`, options: { cwd } });
+  execute({ args: ['commit', '-m', message], options: { cwd } });
+
+  const basicCredential = Buffer.from(`x-access-token:${token}`).toString('base64');
+  core.setSecret(basicCredential);
+
+  execute({
+    args: [
+      '-c',
+      `http.extraheader=AUTHORIZATION: basic ${basicCredential}`,
+      'push',
+      'origin',
+      `HEAD:${dataBranch}`,
+    ],
+    options: { cwd },
+  });
 
   core.info(`Data committed and pushed to ${dataBranch}`);
 

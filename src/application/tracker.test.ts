@@ -1,4 +1,42 @@
+import * as core from '@actions/core';
+import * as github from '@actions/github';
+import { loadConfig } from '@config/loader';
+import { compareStars, createSnapshot } from '@domain/comparison';
+import { computeForecast } from '@domain/forecast';
+import { deltaIndicator } from '@domain/formatting';
+import { shouldNotify } from '@domain/notification';
+import { addSnapshot, getBaselineSnapshot } from '@domain/snapshot';
+import { buildStargazerMap, diffStargazers } from '@domain/stargazers';
+import { CompareAgainst, NotificationMode } from '@domain/types';
+import { cleanup, initializeDataBranch } from '@infrastructure/git/worktree';
+import { getRepos } from '@infrastructure/github/filters';
+import { fetchAllStargazers } from '@infrastructure/github/stargazers';
+import { getEmailConfig, sendEmail } from '@infrastructure/notification/email';
+import {
+  commitAndPush,
+  readHistory,
+  readStargazers,
+  writeBadge,
+  writeChart,
+  writeCsv,
+  writeHistory,
+  writeReport,
+  writeStargazers,
+} from '@infrastructure/persistence/storage';
+import { retry } from '@octokit/plugin-retry';
+import { generateBadge } from '@presentation/badge';
+import { generateCsvReport } from '@presentation/csv';
+import { generateHtmlReport } from '@presentation/html';
+import { generateMarkdownReport } from '@presentation/markdown';
+import {
+  generateComparisonSvgChart,
+  generateForecastSvgChart,
+  generatePerRepoSvgChart,
+  generateSvgChart,
+} from '@presentation/svg-chart';
+import { makeConfig, makeRepoInfo, makeStargazerSeries } from '@shared/tests';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { trackStars } from './tracker';
 
 vi.mock('@actions/core', () => ({
   getInput: vi.fn(),
@@ -22,7 +60,8 @@ vi.mock('@domain/comparison', () => ({
   createSnapshot: vi.fn(),
 }));
 
-vi.mock('@domain/forecast', () => ({
+vi.mock('@domain/forecast', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@domain/forecast')>()),
   computeForecast: vi.fn(),
 }));
 
@@ -40,22 +79,8 @@ vi.mock('@domain/notification', () => ({
 }));
 
 vi.mock('@domain/snapshot', () => ({
-  getLastSnapshot: vi.fn(),
+  getBaselineSnapshot: vi.fn(),
   addSnapshot: vi.fn(),
-}));
-
-vi.mock('@i18n', () => ({
-  getTranslations: vi.fn(),
-  interpolate: ({
-    template,
-    params,
-  }: {
-    template: string;
-    params: Record<string, string | number>;
-  }) =>
-    template.replace(/\{(\w+)\}/g, (_, key: string) =>
-      key in params ? String(params[key]) : `{${key}}`,
-    ),
 }));
 
 vi.mock('@infrastructure/github/filters', () => ({
@@ -76,8 +101,10 @@ vi.mock('@infrastructure/persistence/storage', () => ({
   readStargazers: vi.fn(),
   writeHistory: vi.fn(),
   writeReport: vi.fn(),
+  writeHtmlReport: vi.fn().mockReturnValue('/tmp/star-tracker-report.html'),
   writeBadge: vi.fn(),
   writeChart: vi.fn(),
+  pruneCharts: vi.fn().mockReturnValue([]),
   writeCsv: vi.fn(),
   writeStargazers: vi.fn(),
   commitAndPush: vi.fn(),
@@ -106,57 +133,12 @@ vi.mock('@presentation/markdown', () => ({
 
 vi.mock('@presentation/svg-chart', () => ({
   generateSvgChart: vi.fn(),
+  generatePerRepoSvgChart: vi.fn(),
+  generateComparisonSvgChart: vi.fn(),
+  generateForecastSvgChart: vi.fn(),
 }));
 
-import * as core from '@actions/core';
-import * as github from '@actions/github';
-import { loadConfig } from '@config/loader';
-import { Visibility } from '@config/types';
-import { compareStars, createSnapshot } from '@domain/comparison';
-import { computeForecast } from '@domain/forecast';
-import { deltaIndicator } from '@domain/formatting';
-import { shouldNotify } from '@domain/notification';
-import { addSnapshot, getLastSnapshot } from '@domain/snapshot';
-import { buildStargazerMap, diffStargazers } from '@domain/stargazers';
-import { getTranslations } from '@i18n';
-import { cleanup, initializeDataBranch } from '@infrastructure/git/worktree';
-import { getRepos } from '@infrastructure/github/filters';
-import { fetchAllStargazers } from '@infrastructure/github/stargazers';
-import { getEmailConfig, sendEmail } from '@infrastructure/notification/email';
-import {
-  commitAndPush,
-  readHistory,
-  readStargazers,
-  writeBadge,
-  writeChart,
-  writeCsv,
-  writeHistory,
-  writeReport,
-  writeStargazers,
-} from '@infrastructure/persistence/storage';
-import { generateBadge } from '@presentation/badge';
-import { generateCsvReport } from '@presentation/csv';
-import { generateHtmlReport } from '@presentation/html';
-import { generateMarkdownReport } from '@presentation/markdown';
-import { generateSvgChart } from '@presentation/svg-chart';
-import { trackStars } from './tracker';
-
-const defaultConfig = {
-  visibility: Visibility.ALL,
-  includeArchived: false,
-  includeForks: false,
-  excludeRepos: [],
-  onlyRepos: [],
-  minStars: 0,
-  dataBranch: 'star-data',
-  maxHistory: 52,
-  sendOnNoChanges: false,
-  includeCharts: true,
-  locale: 'en' as const,
-  notificationThreshold: 0,
-  trackStargazers: false,
-  topRepos: 10,
-};
+const defaultConfig = makeConfig({ dataBranch: 'star-data', notificationThreshold: 0 });
 
 const defaultSummary = {
   totalStars: 100,
@@ -167,84 +149,12 @@ const defaultSummary = {
   changed: true,
 };
 
-const defaultRepos = [
-  {
-    owner: 'user',
-    name: 'repo-a',
-    fullName: 'user/repo-a',
-    private: false,
-    archived: false,
-    fork: false,
-    stars: 60,
-  },
-  {
-    owner: 'user',
-    name: 'repo-b',
-    fullName: 'user/repo-b',
-    private: false,
-    archived: false,
-    fork: false,
-    stars: 40,
-  },
-];
+const defaultRepos = [makeRepoInfo('repo-a', 60), makeRepoInfo('repo-b', 40)];
 
 const defaultHistory = { snapshots: [] };
 const defaultSnapshot = { timestamp: '2026-01-01T00:00:00Z', totalStars: 100, repos: [] };
 const defaultUpdatedHistory = { snapshots: [defaultSnapshot] };
 const defaultResults = { repos: [], summary: defaultSummary };
-const defaultTranslations = {
-  badge: { totalStars: 'Total Stars' },
-  report: {
-    title: 'Star Report',
-    total: 'Total',
-    change: 'Change',
-    comparedTo: 'Compared to',
-    firstRun: 'First run',
-    repositories: 'Repositories',
-    stars: 'Stars',
-    starsCount: '{count} stars',
-    trend: 'Trend',
-    newRepositories: 'New',
-    removedRepositories: 'Removed',
-    removedRepoText: '{name}: was {count} stars',
-    summary: 'Summary',
-    starsGained: 'Stars gained',
-    starsLost: 'Stars lost',
-    netChange: 'Net change',
-    starTrend: 'Star Trend',
-    starHistory: 'Star History',
-    topRepositories: 'Top Repos',
-    byRepository: 'By Repo',
-    individualRepoCharts: 'Individual Repository Charts',
-    badges: { new: 'NEW' },
-  },
-  email: {
-    subject: 'Star Report',
-    subjectLine: '{subject}: {totalStars} ({delta})',
-    defaultFrom: 'noreply@example.com',
-  },
-  trends: { up: 'Up', down: 'Down', stable: 'Stable' },
-  footer: { generated: 'Generated by {project} on {date}', madeBy: 'Made by {author}' },
-  stargazers: {
-    sectionTitle: 'New Stargazers',
-    newStargazers: '{count} new stargazers since last run',
-    starredOn: 'starred on {date}',
-    noNewStargazers: 'No new stargazers since last run',
-    stargazerCount: '{count} new',
-  },
-  forecast: {
-    sectionTitle: 'Growth Forecast',
-    predictedStars: 'Predicted Stars',
-    week: 'Week {n}',
-    linearRegression: 'Linear Regression',
-    weightedMovingAverage: 'Weighted Moving Average',
-    aggregate: 'Aggregate Forecast',
-    byRepository: 'By Repository',
-    insufficientData: 'Not enough data',
-    method: 'Method',
-    predicted: 'Predicted',
-  },
-};
 
 function setupDefaults() {
   vi.mocked(core.getInput).mockImplementation((name: string) => {
@@ -252,11 +162,10 @@ function setupDefaults() {
     return '';
   });
   vi.mocked(loadConfig).mockReturnValue(defaultConfig);
-  vi.mocked(getTranslations).mockReturnValue(defaultTranslations);
   vi.mocked(getRepos).mockResolvedValue(defaultRepos);
   vi.mocked(initializeDataBranch).mockReturnValue('.star-data');
   vi.mocked(readHistory).mockReturnValue(defaultHistory);
-  vi.mocked(getLastSnapshot).mockReturnValue(null);
+  vi.mocked(getBaselineSnapshot).mockReturnValue(null);
   vi.mocked(compareStars).mockReturnValue(defaultResults);
   vi.mocked(deltaIndicator).mockReturnValue('+10');
   vi.mocked(generateMarkdownReport).mockReturnValue('# MD Report');
@@ -270,6 +179,9 @@ function setupDefaults() {
   vi.mocked(computeForecast).mockReturnValue(null);
   vi.mocked(generateCsvReport).mockReturnValue('repository,owner,name,stars,previous,delta,status');
   vi.mocked(generateSvgChart).mockReturnValue(null);
+  vi.mocked(generatePerRepoSvgChart).mockReturnValue(null);
+  vi.mocked(generateComparisonSvgChart).mockReturnValue(null);
+  vi.mocked(generateForecastSvgChart).mockReturnValue(null);
   vi.mocked(fetchAllStargazers).mockResolvedValue([]);
   vi.mocked(readStargazers).mockReturnValue({});
   vi.mocked(diffStargazers).mockReturnValue({ entries: [], totalNew: 0 });
@@ -291,7 +203,10 @@ describe('trackStars', () => {
 
     expect(loadConfig).toHaveBeenCalled();
     expect(getRepos).toHaveBeenCalled();
-    expect(initializeDataBranch).toHaveBeenCalledWith('star-data');
+    expect(initializeDataBranch).toHaveBeenCalledWith({
+      dataBranch: 'star-data',
+      readOnly: false,
+    });
     expect(readHistory).toHaveBeenCalledWith('.star-data');
     expect(compareStars).toHaveBeenCalled();
     expect(generateMarkdownReport).toHaveBeenCalled();
@@ -349,6 +264,17 @@ describe('trackStars', () => {
       await trackStars();
 
       expect(sendEmail).toHaveBeenCalled();
+      expect(core.setOutput).toHaveBeenCalledWith('notification-sent', 'true');
+      expect(core.setOutput).toHaveBeenCalledWith('should-notify', 'false');
+    });
+
+    it('reports notification-sent false when the transport is unconfigured', async () => {
+      vi.mocked(getEmailConfig).mockReturnValue(null);
+
+      await trackStars();
+
+      expect(sendEmail).not.toHaveBeenCalled();
+      expect(core.setOutput).toHaveBeenCalledWith('notification-sent', 'false');
     });
 
     it('skips email when no changes and sendOnNoChanges is false', async () => {
@@ -361,7 +287,7 @@ describe('trackStars', () => {
       await trackStars();
 
       expect(sendEmail).not.toHaveBeenCalled();
-      expect(core.info).toHaveBeenCalledWith('No star changes detected, skipping email');
+      expect(core.info).toHaveBeenCalledWith('Notification threshold not reached, skipping email');
     });
 
     it('skips email when threshold is not reached', async () => {
@@ -445,6 +371,10 @@ describe('trackStars', () => {
 
       expect(core.setOutput).toHaveBeenCalledWith('report', '# MD Report');
       expect(core.setOutput).toHaveBeenCalledWith('report-html', '<p>HTML</p>');
+      expect(core.setOutput).toHaveBeenCalledWith(
+        'report-html-path',
+        '/tmp/star-tracker-report.html',
+      );
       expect(core.setOutput).toHaveBeenCalledWith('total-stars', '100');
       expect(core.setOutput).toHaveBeenCalledWith('stars-changed', 'true');
       expect(core.setOutput).toHaveBeenCalledWith('new-stars', '12');
@@ -472,7 +402,13 @@ describe('trackStars', () => {
   });
 
   describe('stargazer tracking', () => {
-    it('skips stargazer fetch when trackStargazers is false', async () => {
+    it('skips stargazer fetch when charts and tracking are both off', async () => {
+      vi.mocked(loadConfig).mockReturnValue({
+        ...defaultConfig,
+        includeCharts: false,
+        trackStargazers: false,
+      });
+
       await trackStars();
 
       expect(fetchAllStargazers).not.toHaveBeenCalled();
@@ -492,6 +428,15 @@ describe('trackStars', () => {
       expect(writeStargazers).toHaveBeenCalled();
       expect(core.setOutput).toHaveBeenCalledWith('new-stargazers', '3');
     });
+
+    it('fetches stargazers for the historical chart without writing the stargazer map', async () => {
+      await trackStars();
+
+      expect(fetchAllStargazers).toHaveBeenCalledTimes(1);
+      expect(writeStargazers).not.toHaveBeenCalled();
+      expect(diffStargazers).not.toHaveBeenCalled();
+      expect(core.setOutput).toHaveBeenCalledWith('new-stargazers', '0');
+    });
   });
 
   describe('svg chart', () => {
@@ -502,7 +447,10 @@ describe('trackStars', () => {
           { timestamp: '2026-01-02T00:00:00Z', totalStars: 100, repos: [] },
         ],
       };
-      vi.mocked(readHistory).mockReturnValue(historyWithSnapshots);
+      vi.mocked(readHistory).mockReturnValue({
+        snapshots: historyWithSnapshots.snapshots.slice(0, 1),
+      });
+      vi.mocked(addSnapshot).mockReturnValue(historyWithSnapshots);
       vi.mocked(generateSvgChart).mockReturnValue('<svg>chart</svg>');
 
       await trackStars();
@@ -515,6 +463,99 @@ describe('trackStars', () => {
         filename: 'star-history.svg',
         svg: '<svg>chart</svg>',
       });
+    });
+
+    it('draws each per-repo chart on its own timeline, not the shared global one', async () => {
+      vi.mocked(getRepos).mockResolvedValue([
+        makeRepoInfo('old', 100, { owner: 'u', fullName: 'u/old' }),
+        makeRepoInfo('new', 30, { owner: 'u', fullName: 'u/new' }),
+      ]);
+      vi.mocked(compareStars).mockReturnValue({
+        repos: [
+          { fullName: 'u/old', current: 100, isRemoved: false },
+          { fullName: 'u/new', current: 30, isRemoved: false },
+        ],
+        summary: defaultSummary,
+        // biome-ignore lint/suspicious/noExplicitAny: partial fixture stands in for full ComparisonResults
+      } as any);
+      vi.mocked(fetchAllStargazers).mockResolvedValue([
+        {
+          repoFullName: 'u/old',
+          stargazers: makeStargazerSeries({
+            count: 100,
+            startMs: Date.UTC(2025, 0, 1),
+            stepDays: 5,
+          }),
+        },
+        {
+          repoFullName: 'u/new',
+          stargazers: makeStargazerSeries({ count: 30, startMs: Date.UTC(2026, 4, 25) }),
+        },
+      ]);
+      const perRepo: Record<string, { snapshots: { timestamp: string; totalStars: number }[] }> =
+        {};
+      vi.mocked(generatePerRepoSvgChart).mockImplementation((params) => {
+        perRepo[params.repoFullName] = params.history;
+        return '<svg/>';
+      });
+
+      await trackStars();
+
+      const series = perRepo['u/new'].snapshots.map((snapshot) => snapshot.totalStars);
+      expect(perRepo['u/new'].snapshots[0].timestamp.startsWith('2026-05')).toBe(true);
+      expect(series[0]).toBeGreaterThan(0);
+      expect(series.at(-1)).toBe(30);
+    });
+
+    it('falls back to stored snapshots for a repo whose stargazers were unreachable (#148)', async () => {
+      vi.mocked(getRepos).mockResolvedValue([
+        makeRepoInfo('reachable', 100, { owner: 'u', fullName: 'u/reachable' }),
+        makeRepoInfo('restricted', 54_000, { owner: 'u', fullName: 'u/restricted' }),
+      ]);
+      vi.mocked(compareStars).mockReturnValue({
+        repos: [
+          { fullName: 'u/reachable', current: 100, isRemoved: false },
+          { fullName: 'u/restricted', current: 54_000, isRemoved: false },
+        ],
+        summary: defaultSummary,
+        // biome-ignore lint/suspicious/noExplicitAny: partial fixture stands in for full ComparisonResults
+      } as any);
+      const storedSnapshots = {
+        snapshots: [
+          {
+            timestamp: '2026-06-01T00:00:00Z',
+            totalStars: 53_950,
+            repos: [{ fullName: 'u/restricted', name: 'restricted', owner: 'u', stars: 53_900 }],
+          },
+          {
+            timestamp: '2026-06-08T00:00:00Z',
+            totalStars: 54_100,
+            repos: [{ fullName: 'u/restricted', name: 'restricted', owner: 'u', stars: 54_000 }],
+          },
+        ],
+      };
+      vi.mocked(addSnapshot).mockReturnValue(storedSnapshots);
+      vi.mocked(fetchAllStargazers).mockResolvedValue([
+        {
+          repoFullName: 'u/reachable',
+          stargazers: makeStargazerSeries({
+            count: 100,
+            startMs: Date.UTC(2025, 0, 1),
+            stepDays: 5,
+          }),
+        },
+        { repoFullName: 'u/restricted', stargazers: [] },
+      ]);
+      const perRepo: Record<string, { snapshots: { totalStars: number }[] }> = {};
+      vi.mocked(generatePerRepoSvgChart).mockImplementation((params) => {
+        perRepo[params.repoFullName] = params.history;
+        return '<svg/>';
+      });
+
+      await trackStars();
+
+      expect(perRepo['u/restricted']).toBe(storedSnapshots);
+      expect(perRepo['u/reachable']).not.toBe(storedSnapshots);
     });
 
     it('skips SVG chart when includeCharts is false', async () => {
@@ -547,13 +588,106 @@ describe('trackStars', () => {
           { timestamp: '2026-01-02T00:00:00Z', totalStars: 100, repos: [] },
         ],
       };
-      vi.mocked(readHistory).mockReturnValue(historyWithSnapshots);
+      vi.mocked(readHistory).mockReturnValue({
+        snapshots: historyWithSnapshots.snapshots.slice(0, 1),
+      });
+      vi.mocked(addSnapshot).mockReturnValue(historyWithSnapshots);
       vi.mocked(generateSvgChart).mockReturnValue(null);
 
       await trackStars();
 
       expect(generateSvgChart).toHaveBeenCalled();
       expect(writeChart).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('per-repo, comparison and forecast charts', () => {
+    const twoSnapshots = {
+      snapshots: [
+        { timestamp: '2026-01-01T00:00:00Z', totalStars: 80, repos: [] },
+        { timestamp: '2026-01-02T00:00:00Z', totalStars: 100, repos: [] },
+      ],
+    };
+    const resultsWithRepos = {
+      repos: [
+        { fullName: 'user/repo-a', current: 60, isRemoved: false },
+        { fullName: 'user/repo-b', current: 40, isRemoved: false },
+        { fullName: 'user/repo-c', current: 10, isRemoved: true },
+      ],
+      summary: defaultSummary,
+    };
+    const forecastData = {
+      aggregate: {
+        forecasts: [{ method: 'linear-regression', points: [{ weekOffset: 1, predicted: 110 }] }],
+      },
+      repos: [],
+    };
+
+    beforeEach(() => {
+      // biome-ignore lint/suspicious/noExplicitAny: test fixture stands in for full ComparisonResults
+      vi.mocked(compareStars).mockReturnValue(resultsWithRepos as any);
+      vi.mocked(addSnapshot).mockReturnValue(twoSnapshots);
+      // biome-ignore lint/suspicious/noExplicitAny: test fixture stands in for full ForecastData
+      vi.mocked(computeForecast).mockReturnValue(forecastData as any);
+    });
+
+    it('writes per-repo, comparison and forecast charts when they are generated', async () => {
+      vi.mocked(generatePerRepoSvgChart).mockReturnValue('<svg>repo</svg>');
+      vi.mocked(generateComparisonSvgChart).mockReturnValue('<svg>cmp</svg>');
+      vi.mocked(generateForecastSvgChart).mockReturnValue('<svg>fc</svg>');
+
+      await trackStars();
+
+      expect(generatePerRepoSvgChart).toHaveBeenCalledWith(
+        expect.objectContaining({ repoFullName: 'user/repo-a' }),
+      );
+      expect(writeChart).toHaveBeenCalledWith({
+        dataDir: '.star-data',
+        filename: 'user-repo-a.svg',
+        svg: '<svg>repo</svg>',
+      });
+      expect(writeChart).toHaveBeenCalledWith({
+        dataDir: '.star-data',
+        filename: 'comparison.svg',
+        svg: '<svg>cmp</svg>',
+      });
+      expect(generateForecastSvgChart).toHaveBeenCalledWith(
+        expect.objectContaining({ forecastData }),
+      );
+      expect(writeChart).toHaveBeenCalledWith({
+        dataDir: '.star-data',
+        filename: 'forecast.svg',
+        svg: '<svg>fc</svg>',
+      });
+    });
+
+    it('excludes removed repos from the chart set', async () => {
+      vi.mocked(generatePerRepoSvgChart).mockReturnValue('<svg>repo</svg>');
+
+      await trackStars();
+
+      expect(generatePerRepoSvgChart).not.toHaveBeenCalledWith(
+        expect.objectContaining({ repoFullName: 'user/repo-c' }),
+      );
+    });
+
+    it('skips writing charts that come back null', async () => {
+      await trackStars();
+
+      expect(generatePerRepoSvgChart).toHaveBeenCalled();
+      expect(generateComparisonSvgChart).toHaveBeenCalled();
+      expect(generateForecastSvgChart).toHaveBeenCalled();
+      expect(writeChart).not.toHaveBeenCalledWith(
+        expect.objectContaining({ filename: 'forecast.svg' }),
+      );
+    });
+
+    it('skips the forecast chart when no forecast data is available', async () => {
+      vi.mocked(computeForecast).mockReturnValue(null);
+
+      await trackStars();
+
+      expect(generateForecastSvgChart).not.toHaveBeenCalled();
     });
   });
 
@@ -575,7 +709,7 @@ describe('trackStars', () => {
     it('calls getOctokit without baseUrl when no API URL is configured', async () => {
       await trackStars();
 
-      expect(github.getOctokit).toHaveBeenCalledWith('fake-token');
+      expect(github.getOctokit).toHaveBeenCalledWith('fake-token', undefined, retry);
     });
 
     it('passes baseUrl when github-api-url input is set', async () => {
@@ -587,9 +721,11 @@ describe('trackStars', () => {
 
       await trackStars();
 
-      expect(github.getOctokit).toHaveBeenCalledWith('fake-token', {
-        baseUrl: 'https://github.example.com/api/v3',
-      });
+      expect(github.getOctokit).toHaveBeenCalledWith(
+        'fake-token',
+        { baseUrl: 'https://github.example.com/api/v3' },
+        retry,
+      );
     });
 
     it('falls back to GITHUB_API_URL env var when input is empty', async () => {
@@ -597,9 +733,11 @@ describe('trackStars', () => {
 
       await trackStars();
 
-      expect(github.getOctokit).toHaveBeenCalledWith('fake-token', {
-        baseUrl: 'https://ghes.corp.com/api/v3',
-      });
+      expect(github.getOctokit).toHaveBeenCalledWith(
+        'fake-token',
+        { baseUrl: 'https://ghes.corp.com/api/v3' },
+        retry,
+      );
     });
 
     it('prefers input over GITHUB_API_URL env var', async () => {
@@ -612,9 +750,11 @@ describe('trackStars', () => {
 
       await trackStars();
 
-      expect(github.getOctokit).toHaveBeenCalledWith('fake-token', {
-        baseUrl: 'https://ghes-input.corp.com/api/v3',
-      });
+      expect(github.getOctokit).toHaveBeenCalledWith(
+        'fake-token',
+        { baseUrl: 'https://ghes-input.corp.com/api/v3' },
+        retry,
+      );
     });
   });
 
@@ -663,6 +803,97 @@ describe('trackStars', () => {
       expect(shouldNotify).toHaveBeenCalledWith(expect.objectContaining({ threshold: 'auto' }));
     });
 
+    it('passes notificationMode to shouldNotify', async () => {
+      vi.mocked(loadConfig).mockReturnValue({
+        ...defaultConfig,
+        notificationMode: NotificationMode.GAINS,
+      });
+
+      await trackStars();
+
+      expect(shouldNotify).toHaveBeenCalledWith(
+        expect.objectContaining({ mode: NotificationMode.GAINS }),
+      );
+    });
+
+    it('passes compareAgainst to getBaselineSnapshot', async () => {
+      vi.mocked(loadConfig).mockReturnValue({
+        ...defaultConfig,
+        compareAgainst: CompareAgainst.D7,
+      });
+
+      await trackStars();
+
+      expect(getBaselineSnapshot).toHaveBeenCalledWith(
+        expect.objectContaining({ compareAgainst: CompareAgainst.D7, history: defaultHistory }),
+      );
+    });
+
+    it('compares against the baseline snapshot', async () => {
+      vi.mocked(getBaselineSnapshot).mockReturnValue(defaultSnapshot);
+
+      await trackStars();
+
+      expect(compareStars).toHaveBeenCalledWith(
+        expect.objectContaining({ previousSnapshot: defaultSnapshot }),
+      );
+    });
+
+    it('derives previousTimestamp from the baseline snapshot when present', async () => {
+      vi.mocked(getBaselineSnapshot).mockReturnValue(defaultSnapshot);
+
+      await trackStars();
+
+      expect(generateMarkdownReport).toHaveBeenCalledWith(
+        expect.objectContaining({ previousTimestamp: '2026-01-01T00:00:00Z' }),
+      );
+    });
+
+    it('passes the stored history as velocityHistory, not the resolved chart history', async () => {
+      await trackStars();
+
+      const params = vi.mocked(generateMarkdownReport).mock.calls[0][0];
+
+      expect(params.velocityHistory).toBeDefined();
+      expect(params.velocityHistory).toBe(vi.mocked(addSnapshot).mock.results[0].value);
+    });
+
+    it('does not advance the notification baseline when the email fails to send', async () => {
+      vi.mocked(getEmailConfig).mockReturnValue({
+        host: 'smtp.test.com',
+        port: 587,
+        username: 'user',
+        password: 'pass',
+        to: 'to@test.com',
+        from: 'from@test.com',
+      });
+      vi.mocked(sendEmail).mockRejectedValue(new Error('smtp down'));
+
+      await trackStars();
+
+      const persisted = vi.mocked(writeHistory).mock.calls[0][0].history;
+
+      expect(persisted.starsAtLastNotification).toBeUndefined();
+    });
+
+    it('does not advance the notification baseline when SMTP is configured without a recipient', async () => {
+      vi.mocked(getEmailConfig).mockReturnValue({
+        host: 'smtp.test.com',
+        port: 587,
+        username: 'user',
+        password: 'pass',
+        to: '',
+        from: 'from@test.com',
+      });
+      vi.mocked(sendEmail).mockResolvedValue(false);
+
+      await trackStars();
+
+      const persisted = vi.mocked(writeHistory).mock.calls[0][0].history;
+
+      expect(persisted.starsAtLastNotification).toBeUndefined();
+    });
+
     it('includes delta indicator in commit message', async () => {
       vi.mocked(deltaIndicator).mockReturnValue('+10');
 
@@ -673,6 +904,40 @@ describe('trackStars', () => {
           message: expect.stringContaining('+10'),
         }),
       );
+    });
+
+    it('does not touch the data branch on a read-only run', async () => {
+      vi.mocked(loadConfig).mockReturnValue({ ...defaultConfig, readOnly: true });
+
+      await trackStars();
+
+      expect(commitAndPush).not.toHaveBeenCalled();
+    });
+
+    it('still builds the report and sets outputs on a read-only run', async () => {
+      vi.mocked(loadConfig).mockReturnValue({ ...defaultConfig, readOnly: true });
+
+      await trackStars();
+
+      expect(generateMarkdownReport).toHaveBeenCalled();
+      expect(core.setOutput).toHaveBeenCalledWith('total-stars', '100');
+    });
+
+    it('still sends the email on a read-only run', async () => {
+      vi.mocked(loadConfig).mockReturnValue({ ...defaultConfig, readOnly: true });
+      vi.mocked(getEmailConfig).mockReturnValue({
+        host: 'smtp.test.com',
+        port: 587,
+        username: 'user',
+        password: 'pass',
+        to: 'to@test.com',
+        from: 'from@test.com',
+      });
+      vi.mocked(shouldNotify).mockReturnValue(true);
+
+      await trackStars();
+
+      expect(sendEmail).toHaveBeenCalled();
     });
   });
 });

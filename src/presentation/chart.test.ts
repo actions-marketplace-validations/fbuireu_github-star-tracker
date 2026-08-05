@@ -1,5 +1,7 @@
+import { ChartCurve } from '@config/types';
 import { ForecastMethod } from '@domain/forecast';
 import type { History } from '@domain/types';
+import { makeMultiRepoHistory } from '@shared/tests';
 import { describe, expect, it } from 'vitest';
 import {
   buildMilestoneAnnotations,
@@ -8,43 +10,24 @@ import {
   generateForecastChartUrl,
   generatePerRepoChartUrl,
 } from './chart';
+import { CHART_TENSION } from './constants';
 
 const CHART_CONFIG_PARAM = '&c=';
 const CHART_HEIGHT = '&h=';
 const CHART_WIDTH = 'w=';
 
-const mockHistory: History = {
-  snapshots: [
-    {
-      timestamp: '2025-01-01T00:00:00.000Z',
-      totalStars: 100,
-      repos: [
-        { fullName: 'user/repo-a', name: 'repo-a', owner: 'user', stars: 50 },
-        { fullName: 'user/repo-b', name: 'repo-b', owner: 'user', stars: 50 },
-      ],
-    },
-    {
-      timestamp: '2025-01-08T00:00:00.000Z',
-      totalStars: 120,
-      repos: [
-        { fullName: 'user/repo-a', name: 'repo-a', owner: 'user', stars: 70 },
-        { fullName: 'user/repo-b', name: 'repo-b', owner: 'user', stars: 50 },
-      ],
-    },
-    {
-      timestamp: '2025-01-15T00:00:00.000Z',
-      totalStars: 150,
-      repos: [
-        { fullName: 'user/repo-a', name: 'repo-a', owner: 'user', stars: 90 },
-        { fullName: 'user/repo-b', name: 'repo-b', owner: 'user', stars: 60 },
-      ],
-    },
+const mockHistory: History = makeMultiRepoHistory(
+  [
+    { 'user/repo-a': 50, 'user/repo-b': 50 },
+    { 'user/repo-a': 70, 'user/repo-b': 50 },
+    { 'user/repo-a': 90, 'user/repo-b': 60 },
   ],
-};
+  { startMs: Date.UTC(2025, 0, 1) },
+);
 
 describe('chart', () => {
   describe('generateChartUrl', () => {
-    it('should generate valid QuickChart URL with history data', () => {
+    it('generates valid QuickChart URL with history data', () => {
       const url = generateChartUrl({ history: mockHistory, title: 'Test Chart', locale: 'en' });
 
       expect(url).toContain('https://quickchart.io/chart?');
@@ -53,7 +36,7 @@ describe('chart', () => {
       expect(url).toContain(CHART_CONFIG_PARAM);
     });
 
-    it('should return null when history has less than 2 snapshots', () => {
+    it('returns null when history has fewer than 2 snapshots', () => {
       const singleSnapshot: History = {
         snapshots: [mockHistory.snapshots[0]],
       };
@@ -62,14 +45,14 @@ describe('chart', () => {
       expect(url).toBeNull();
     });
 
-    it('should return null when history has no snapshots', () => {
+    it('returns null when history has no snapshots', () => {
       const emptyHistory: History = { snapshots: [] };
       const url = generateChartUrl({ history: emptyHistory, locale: 'en' });
 
       expect(url).toBeNull();
     });
 
-    it('should include correct data points in chart config', () => {
+    it('includes correct data points in chart config', () => {
       const url = generateChartUrl({ history: mockHistory, locale: 'en' });
 
       expect(url).toBeDefined();
@@ -82,7 +65,7 @@ describe('chart', () => {
       }
     });
 
-    it('should format dates correctly', () => {
+    it('formats dates correctly', () => {
       const url = generateChartUrl({ history: mockHistory, locale: 'en' });
 
       expect(url).toBeDefined();
@@ -96,11 +79,11 @@ describe('chart', () => {
       }
     });
 
-    it('should limit data to last 30 points', () => {
+    it('limits data to last 30 points', () => {
       const largeHistory: History = {
-        snapshots: Array.from({ length: 50 }, (_, i) => ({
-          timestamp: new Date(2025, 0, i + 1).toISOString(),
-          totalStars: 100 + i * 10,
+        snapshots: Array.from({ length: 50 }, (_, index) => ({
+          timestamp: new Date(2025, 0, index + 1).toISOString(),
+          totalStars: 100 + index * 10,
           repos: [],
         })),
       };
@@ -119,7 +102,7 @@ describe('chart', () => {
   });
 
   describe('generatePerRepoChartUrl', () => {
-    it('should generate chart for specific repository', () => {
+    it('generates chart for specific repository', () => {
       const url = generatePerRepoChartUrl({
         history: mockHistory,
         repoFullName: 'user/repo-a',
@@ -135,7 +118,7 @@ describe('chart', () => {
       }
     });
 
-    it('should use custom title when provided', () => {
+    it('uses custom title when provided', () => {
       const url = generatePerRepoChartUrl({
         history: mockHistory,
         repoFullName: 'user/repo-a',
@@ -152,7 +135,7 @@ describe('chart', () => {
       }
     });
 
-    it('should return null for non-existent repository', () => {
+    it('renders a flat zero series for a repository absent from every snapshot', () => {
       const url = generatePerRepoChartUrl({
         history: mockHistory,
         repoFullName: 'user/non-existent',
@@ -168,7 +151,7 @@ describe('chart', () => {
       }
     });
 
-    it('should return null when history has less than 2 snapshots', () => {
+    it('returns null when history has fewer than 2 snapshots', () => {
       const singleSnapshot: History = {
         snapshots: [mockHistory.snapshots[0]],
       };
@@ -183,7 +166,7 @@ describe('chart', () => {
   });
 
   describe('generateComparisonChartUrl', () => {
-    it('should generate comparison chart for multiple repositories', () => {
+    it('generates comparison chart for multiple repositories', () => {
       const url = generateComparisonChartUrl({
         history: mockHistory,
         repoNames: ['user/repo-a', 'user/repo-b'],
@@ -202,10 +185,10 @@ describe('chart', () => {
       }
     });
 
-    it('should limit to 10 repositories maximum', () => {
+    it('limits to 10 repositories maximum', () => {
       const url = generateComparisonChartUrl({
         history: mockHistory,
-        repoNames: Array.from({ length: 12 }, (_, i) => `user/repo-${i}`),
+        repoNames: Array.from({ length: 12 }, (_, index) => `user/repo-${index}`),
         locale: 'en',
       });
 
@@ -219,13 +202,13 @@ describe('chart', () => {
       }
     });
 
-    it('should return null when no repositories provided', () => {
+    it('returns null when no repositories provided', () => {
       const url = generateComparisonChartUrl({ history: mockHistory, repoNames: [], locale: 'en' });
 
       expect(url).toBeNull();
     });
 
-    it('should return null when history has less than 2 snapshots', () => {
+    it('returns null when history has fewer than 2 snapshots', () => {
       const singleSnapshot: History = {
         snapshots: [mockHistory.snapshots[0]],
       };
@@ -238,7 +221,7 @@ describe('chart', () => {
       expect(url).toBeNull();
     });
 
-    it('should use custom title when provided', () => {
+    it('uses custom title when provided', () => {
       const url = generateComparisonChartUrl({
         history: mockHistory,
         repoNames: ['user/repo-a'],
@@ -255,7 +238,7 @@ describe('chart', () => {
       }
     });
 
-    it('should enable legend for multiple repositories', () => {
+    it('enables legend for multiple repositories', () => {
       const url = generateComparisonChartUrl({
         history: mockHistory,
         repoNames: ['user/repo-a', 'user/repo-b'],
@@ -272,7 +255,7 @@ describe('chart', () => {
       }
     });
 
-    it('should use short labels when all repos share the same owner', () => {
+    it('uses short labels when all repos share the same owner', () => {
       const url = generateComparisonChartUrl({
         history: mockHistory,
         repoNames: ['user/repo-a', 'user/repo-b'],
@@ -290,7 +273,7 @@ describe('chart', () => {
       }
     });
 
-    it('should use full names when repos have different owners', () => {
+    it('uses full names when repos have different owners', () => {
       const mixedHistory: History = {
         snapshots: [
           {
@@ -357,7 +340,7 @@ describe('chart', () => {
       repos: [],
     };
 
-    it('should generate forecast chart with dashed lines', () => {
+    it('generates forecast chart with dashed lines', () => {
       const url = generateForecastChartUrl({
         history: mockHistory,
         forecastData,
@@ -377,7 +360,7 @@ describe('chart', () => {
       }
     });
 
-    it('should include historical and forecast labels', () => {
+    it('includes historical and forecast labels', () => {
       const url = generateForecastChartUrl({
         history: mockHistory,
         forecastData,
@@ -395,7 +378,7 @@ describe('chart', () => {
       }
     });
 
-    it('should return null when history has less than 2 snapshots', () => {
+    it('returns null when history has fewer than 2 snapshots', () => {
       const url = generateForecastChartUrl({
         history: { snapshots: [mockHistory.snapshots[0]] },
         forecastData,
@@ -405,7 +388,7 @@ describe('chart', () => {
       expect(url).toBeNull();
     });
 
-    it('should enable legend', () => {
+    it('enables legend', () => {
       const url = generateForecastChartUrl({
         history: mockHistory,
         forecastData,
@@ -424,7 +407,7 @@ describe('chart', () => {
   });
 
   describe('buildMilestoneAnnotations', () => {
-    it('should return annotations for milestones within range', () => {
+    it('returns annotations for milestones within range', () => {
       const result = buildMilestoneAnnotations({ minStars: 30, maxStars: 200 });
 
       expect(result).not.toBeNull();
@@ -434,20 +417,28 @@ describe('chart', () => {
       expect(result?.annotations.milestone100.yMin).toBe(100);
     });
 
-    it('should exclude milestones outside the visible range', () => {
+    it('excludes milestones outside the visible range', () => {
       const result = buildMilestoneAnnotations({ minStars: 30, maxStars: 200 });
 
       expect(result?.annotations).not.toHaveProperty('milestone10');
       expect(result?.annotations).not.toHaveProperty('milestone500');
     });
 
-    it('should return null when no milestones are visible', () => {
+    it('returns null when no milestones are visible', () => {
       const result = buildMilestoneAnnotations({ minStars: 200, maxStars: 400 });
 
       expect(result).toBeNull();
     });
 
-    it('should exclude boundary values (min and max)', () => {
+    it('returns annotations for repos above the ten-thousand mark', () => {
+      const result = buildMilestoneAnnotations({ minStars: 12_000, maxStars: 120_000 });
+
+      expect(result).not.toBeNull();
+      expect(result?.annotations).toHaveProperty('milestone50000');
+      expect(result?.annotations).toHaveProperty('milestone100000');
+    });
+
+    it('excludes boundary values (min and max)', () => {
       const result = buildMilestoneAnnotations({ minStars: 50, maxStars: 1000 });
 
       expect(result).not.toBeNull();
@@ -457,7 +448,20 @@ describe('chart', () => {
       expect(result?.annotations).toHaveProperty('milestone500');
     });
 
-    it('should include milestone annotations in aggregate chart', () => {
+    it('uses custom thresholds when provided', () => {
+      const result = buildMilestoneAnnotations({
+        minStars: 30,
+        maxStars: 400,
+        thresholds: [50, 250, 5000],
+      });
+
+      expect(result?.annotations).toHaveProperty('milestone250');
+      expect(result?.annotations.milestone250.yMin).toBe(250);
+      expect(result?.annotations).not.toHaveProperty('milestone100');
+      expect(result?.annotations).not.toHaveProperty('milestone5000');
+    });
+
+    it('includes milestone annotations in aggregate chart', () => {
       const largeHistory: History = {
         snapshots: [
           {
@@ -486,7 +490,7 @@ describe('chart', () => {
       }
     });
 
-    it('should not include annotations when no milestones in range', () => {
+    it('does not include annotations when no milestones in range', () => {
       const url = generateChartUrl({ history: mockHistory, locale: 'en' });
 
       expect(url).toBeDefined();
@@ -496,6 +500,306 @@ describe('chart', () => {
         const config = JSON.parse(decodedUrl.split(CHART_CONFIG_PARAM)[1]);
 
         expect(config.options.plugins.annotation).toBeUndefined();
+      }
+    });
+
+    it('uses custom milestones in the aggregate chart when provided', () => {
+      const largeHistory: History = {
+        snapshots: [
+          { timestamp: '2025-01-01T00:00:00.000Z', totalStars: 80, repos: [] },
+          { timestamp: '2025-01-08T00:00:00.000Z', totalStars: 120, repos: [] },
+        ],
+      };
+
+      const url = generateChartUrl({
+        history: largeHistory,
+        locale: 'en',
+        customMilestones: [90, 110],
+      });
+
+      expect(url).toBeDefined();
+
+      if (url) {
+        const config = JSON.parse(decodeURIComponent(url).split(CHART_CONFIG_PARAM)[1]);
+        const { annotations } = config.options.plugins.annotation;
+
+        expect(annotations).toHaveProperty('milestone90');
+        expect(annotations).toHaveProperty('milestone110');
+        expect(annotations).not.toHaveProperty('milestone100');
+      }
+    });
+
+    it('falls back to default milestones when custom list is empty', () => {
+      const largeHistory: History = {
+        snapshots: [
+          { timestamp: '2025-01-01T00:00:00.000Z', totalStars: 80, repos: [] },
+          { timestamp: '2025-01-08T00:00:00.000Z', totalStars: 120, repos: [] },
+        ],
+      };
+
+      const url = generateChartUrl({ history: largeHistory, locale: 'en', customMilestones: [] });
+
+      expect(url).toBeDefined();
+
+      if (url) {
+        const config = JSON.parse(decodeURIComponent(url).split(CHART_CONFIG_PARAM)[1]);
+
+        expect(config.options.plugins.annotation.annotations).toHaveProperty('milestone100');
+      }
+    });
+
+    it('does not include annotations when milestones are disabled', () => {
+      const largeHistory: History = {
+        snapshots: [
+          { timestamp: '2025-01-01T00:00:00.000Z', totalStars: 80, repos: [] },
+          { timestamp: '2025-01-08T00:00:00.000Z', totalStars: 120, repos: [] },
+        ],
+      };
+
+      const url = generateChartUrl({ history: largeHistory, locale: 'en', milestones: false });
+
+      expect(url).not.toBeNull();
+      if (url) {
+        const config = JSON.parse(decodeURIComponent(url).split(CHART_CONFIG_PARAM)[1]);
+
+        expect(config.options.plugins.annotation).toBeUndefined();
+      }
+    });
+  });
+
+  describe('smoothing', () => {
+    const tensionOf = (url: string): number => {
+      const config = JSON.parse(decodeURIComponent(url).split(CHART_CONFIG_PARAM)[1]);
+      return config.data.datasets[0].tension;
+    };
+
+    it('curves the line with a positive tension by default', () => {
+      const url = generateChartUrl({ history: mockHistory, locale: 'en' });
+
+      expect(url).not.toBeNull();
+      if (url) expect(tensionOf(url)).toBe(CHART_TENSION.smooth);
+    });
+
+    it('curves the line when smoothing is enabled', () => {
+      const url = generateChartUrl({ history: mockHistory, locale: 'en', smoothing: true });
+
+      expect(url).not.toBeNull();
+      if (url) expect(tensionOf(url)).toBe(CHART_TENSION.smooth);
+    });
+
+    it('draws straight segments when smoothing is disabled', () => {
+      const url = generateChartUrl({ history: mockHistory, locale: 'en', smoothing: false });
+
+      expect(url).not.toBeNull();
+      if (url) expect(tensionOf(url)).toBe(0);
+    });
+
+    it('applies the smoothing setting to comparison datasets', () => {
+      const url = generateComparisonChartUrl({
+        history: mockHistory,
+        repoNames: ['user/repo-a', 'user/repo-b'],
+        locale: 'en',
+        smoothing: false,
+      });
+
+      expect(url).not.toBeNull();
+      if (url) {
+        const config = JSON.parse(decodeURIComponent(url).split(CHART_CONFIG_PARAM)[1]);
+
+        expect(
+          config.data.datasets.every((dataset: { tension: number }) => dataset.tension === 0),
+        ).toBe(true);
+      }
+    });
+  });
+
+  describe('curve', () => {
+    const firstDataset = (url: string): { tension: number; cubicInterpolationMode?: string } => {
+      const config = JSON.parse(decodeURIComponent(url).split(CHART_CONFIG_PARAM)[1]);
+      return config.data.datasets[0];
+    };
+
+    it('renders the monotone curve as a monotone cubic interpolation by default', () => {
+      const url = generateChartUrl({ history: mockHistory, locale: 'en' });
+
+      expect(url).not.toBeNull();
+      if (url) expect(firstDataset(url).cubicInterpolationMode).toBe(ChartCurve.MONOTONE);
+    });
+
+    it('renders catmull-rom as a tensioned spline without monotone interpolation', () => {
+      const url = generateChartUrl({
+        history: mockHistory,
+        locale: 'en',
+        curve: ChartCurve.CATMULL_ROM,
+      });
+
+      expect(url).not.toBeNull();
+      if (url) {
+        expect(firstDataset(url).tension).toBe(CHART_TENSION.smooth);
+        expect(firstDataset(url).cubicInterpolationMode).toBeUndefined();
+      }
+    });
+
+    it('falls back to monotone interpolation for the rounded-step curve', () => {
+      const url = generateChartUrl({
+        history: mockHistory,
+        locale: 'en',
+        curve: ChartCurve.ROUNDED_STEP,
+      });
+
+      expect(url).not.toBeNull();
+      if (url) expect(firstDataset(url).cubicInterpolationMode).toBe(ChartCurve.MONOTONE);
+    });
+
+    it('renders cubic-bezier as a tensioned spline without monotone interpolation', () => {
+      const url = generateChartUrl({
+        history: mockHistory,
+        locale: 'en',
+        curve: ChartCurve.CUBIC_BEZIER,
+      });
+
+      expect(url).not.toBeNull();
+      if (url) {
+        expect(firstDataset(url).tension).toBe(CHART_TENSION.smooth);
+        expect(firstDataset(url).cubicInterpolationMode).toBeUndefined();
+      }
+    });
+  });
+
+  describe('range', () => {
+    const weeklyHistory: History = {
+      snapshots: Array.from({ length: 40 }, (_, index) => ({
+        timestamp: new Date(2025, 0, 1 + index * 7).toISOString(),
+        totalStars: 100 + index * 10,
+        repos: [],
+      })),
+    };
+    const dataLength = (url: string): number =>
+      JSON.parse(decodeURIComponent(url).split(CHART_CONFIG_PARAM)[1]).data.datasets[0].data.length;
+
+    it('plots the full history by default', () => {
+      const url = generateChartUrl({ history: weeklyHistory, locale: 'en' });
+
+      expect(url).not.toBeNull();
+      if (url) expect(dataLength(url)).toBe(30);
+    });
+
+    it('limits the plotted history to the selected time window', () => {
+      const all = generateChartUrl({ history: weeklyHistory, locale: 'en' });
+      const recent = generateChartUrl({ history: weeklyHistory, locale: 'en', range: '90d' });
+
+      expect(all).not.toBeNull();
+      expect(recent).not.toBeNull();
+      if (all && recent) {
+        expect(dataLength(recent)).toBeLessThan(dataLength(all));
+        expect(dataLength(recent)).toBeLessThanOrEqual(14);
+      }
+    });
+  });
+
+  describe('trendLine', () => {
+    const datasetCount = (url: string): number =>
+      JSON.parse(decodeURIComponent(url).split(CHART_CONFIG_PARAM)[1]).data.datasets.length;
+
+    it('does not overlay a trend dataset by default', () => {
+      const url = generateChartUrl({ history: mockHistory, locale: 'en' });
+
+      expect(url).not.toBeNull();
+      if (url) expect(datasetCount(url)).toBe(1);
+    });
+
+    it('overlays a dashed moving-average dataset when enabled', () => {
+      const url = generateChartUrl({ history: mockHistory, locale: 'en', trendLine: true });
+
+      expect(url).not.toBeNull();
+      if (url) {
+        const config = JSON.parse(decodeURIComponent(url).split(CHART_CONFIG_PARAM)[1]);
+
+        expect(config.data.datasets).toHaveLength(2);
+        expect(config.data.datasets[1].borderDash).toBeDefined();
+        expect(config.data.datasets[1].fill).toBe(false);
+      }
+    });
+  });
+
+  describe('theme', () => {
+    it('uses a light background by default', () => {
+      const url = generateChartUrl({ history: mockHistory, locale: 'en' });
+
+      expect(url).not.toBeNull();
+      if (url) expect(url).toContain('backgroundColor=%23fff');
+    });
+
+    it('uses a dark background and palette for the dark theme', () => {
+      const url = generateChartUrl({ history: mockHistory, locale: 'en', theme: 'dark' });
+
+      expect(url).not.toBeNull();
+      if (url) {
+        expect(url).toContain('backgroundColor=%230d1117');
+        const config = JSON.parse(decodeURIComponent(url).split(CHART_CONFIG_PARAM)[1]);
+        expect(config.options.scales.y.ticks.color).toBe('#8b949e');
+      }
+    });
+  });
+
+  describe('beginAtZero', () => {
+    const beginAtZeroOf = (url: string): boolean => {
+      const config = JSON.parse(decodeURIComponent(url).split(CHART_CONFIG_PARAM)[1]);
+      return config.options.scales.y.beginAtZero;
+    };
+
+    it('does not begin the Y-axis at zero by default', () => {
+      const url = generateChartUrl({ history: mockHistory, locale: 'en' });
+
+      expect(url).not.toBeNull();
+      if (url) expect(beginAtZeroOf(url)).toBe(false);
+    });
+
+    it('begins the Y-axis at zero when enabled', () => {
+      const url = generateChartUrl({ history: mockHistory, locale: 'en', beginAtZero: true });
+
+      expect(url).not.toBeNull();
+      if (url) expect(beginAtZeroOf(url)).toBe(true);
+    });
+  });
+
+  describe('showPoints', () => {
+    const pointRadiusOf = (url: string): number => {
+      const config = JSON.parse(decodeURIComponent(url).split(CHART_CONFIG_PARAM)[1]);
+      return config.data.datasets[0].pointRadius;
+    };
+
+    it('draws point markers by default', () => {
+      const url = generateChartUrl({ history: mockHistory, locale: 'en' });
+
+      expect(url).not.toBeNull();
+      if (url) expect(pointRadiusOf(url)).toBeGreaterThan(0);
+    });
+
+    it('hides point markers when disabled', () => {
+      const url = generateChartUrl({ history: mockHistory, locale: 'en', showPoints: false });
+
+      expect(url).not.toBeNull();
+      if (url) expect(pointRadiusOf(url)).toBe(0);
+    });
+
+    it('hides markers on every comparison dataset when disabled', () => {
+      const url = generateComparisonChartUrl({
+        history: mockHistory,
+        repoNames: ['user/repo-a', 'user/repo-b'],
+        locale: 'en',
+        showPoints: false,
+      });
+
+      expect(url).not.toBeNull();
+      if (url) {
+        const config = JSON.parse(decodeURIComponent(url).split(CHART_CONFIG_PARAM)[1]);
+
+        expect(
+          config.data.datasets.every(
+            (dataset: { pointRadius: number }) => dataset.pointRadius === 0,
+          ),
+        ).toBe(true);
       }
     });
   });

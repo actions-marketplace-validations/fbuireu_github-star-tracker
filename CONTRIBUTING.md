@@ -41,7 +41,7 @@ Found a typo? Something unclear? Documentation improvements are always welcome:
 
 - README updates
 - Wiki improvements
-- Code comments
+- Per-folder `CLAUDE.md` notes (the source itself stays comment-free)
 - Examples and tutorials
 
 ## Development Process
@@ -340,7 +340,26 @@ github-star-tracker/
 ```
 
 > [!TIP]
-> **Path aliases:** Cross-layer imports use `@application/*`, `@config/*`, `@domain/*`, `@i18n`, `@infrastructure/*`, `@presentation/*`. Same-layer imports use relative paths. Tests are co-located as `*.test.ts` files next to the source.
+> **Path aliases:** Cross-layer imports use `@application/*`, `@config/*`, `@domain/*`, `@i18n`, `@infrastructure/*`, `@presentation/*`, `@shared/*`. Same-layer imports use relative paths. Tests are co-located as `*.test.ts` files next to the source.
+
+### Documentation that ships with the code
+
+Four artefacts, four jobs. They are maintained by hand, so a code change that does not update them leaves
+them lying:
+
+| Document | Answers | Update it when |
+| --- | --- | --- |
+| `CLAUDE.md` (root) | *How do I work in this repo?* Commands, aliases, conventions, the maintenance contract | You change a script, an alias, a convention, or a repo-wide invariant |
+| `CONTEXT.md` (root) | *What does this word mean?* A domain glossary, and nothing else — no file names, no libraries, no implementation detail | A domain term changes meaning, or a new one appears |
+| `src/<layer>/CLAUDE.md` | *What does this layer guarantee?* Invariants and gotchas, one guide per layer | You change an invariant, or a rule the guide states |
+| `ARCHITECTURE.md` | *How does it fit together?* Layer map, end-to-end run, data branch, build and release | You change the run order, the layering, or the pipeline |
+| `docs/adr/` | *Why is it like this?* One decision per file | You make a decision that is hard to reverse, surprising without context, **and** the result of a real trade-off |
+
+The source carries **no explanatory comments** by design — the `CLAUDE.md` files hold that explanation
+instead. That is why letting them drift costs more here than in a commented codebase.
+
+The root [`CLAUDE.md`](./CLAUDE.md) has the full table of what to update for a given change, and
+`docs/docs-consistency.test.ts` fails the build when the mechanical half of it is broken.
 
 
 ## Development Tips
@@ -358,10 +377,10 @@ jobs:
   test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
       - uses: ./  # Uses local action code
         with:
-          github-token: ${{ secrets.GITHUB_STAR_TRACKER_TOKEN }}
+          github-token: ${{ secrets.STAR_TRACKER_TOKEN }}
 ```
 
 ### Debugging

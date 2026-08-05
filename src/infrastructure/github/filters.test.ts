@@ -1,5 +1,7 @@
+import * as core from '@actions/core';
 import type { Config } from '@config/types';
 import { Visibility } from '@config/types';
+import { makeConfig } from '@shared/tests';
 import { describe, expect, it, vi } from 'vitest';
 import { fetchRepos } from './client';
 import { filterRepos, getRepos, mapRepos } from './filters';
@@ -7,6 +9,7 @@ import type { GitHubRepo, Octokit } from './types';
 
 vi.mock('@actions/core', () => ({
   info: vi.fn(),
+  warning: vi.fn(),
 }));
 
 interface MockOctokit {
@@ -34,24 +37,26 @@ function makeRepo(overrides: Partial<GitHubRepo> = {}): GitHubRepo {
   };
 }
 
-const defaultConfig: Config = {
-  visibility: Visibility.ALL,
-  includeArchived: false,
-  includeForks: false,
-  excludeRepos: [],
-  onlyRepos: [],
-  minStars: 0,
-  dataBranch: 'star-tracker-data',
-  maxHistory: 52,
-  sendOnNoChanges: false,
-  includeCharts: false,
-  locale: 'en',
-  notificationThreshold: 0,
-  trackStargazers: false,
-  topRepos: 10,
-};
+const defaultConfig: Config = makeConfig({ includeCharts: false, notificationThreshold: 0 });
 
 describe('filterRepos', () => {
+  it('matches only-repos by regex, like its sibling filters', () => {
+    const repos = [makeRepo({ name: 'app-web' }), makeRepo({ name: 'docs' })];
+    const config = makeConfig({ onlyRepos: ['/^app-/'] });
+
+    expect(filterRepos({ repos, config }).map((repo) => repo.name)).toEqual(['app-web']);
+  });
+
+  it('warns and skips a malformed regex pattern instead of failing the run', () => {
+    const repos = [makeRepo({ name: 'keep-me' }), makeRepo({ name: 'drop-me' })];
+    const config = makeConfig({ excludeRepos: ['/[unclosed/', 'drop-me'] });
+
+    const filtered = filterRepos({ repos, config });
+
+    expect(filtered.map((repo) => repo.name)).toEqual(['keep-me']);
+    expect(core.warning).toHaveBeenCalledWith(expect.stringContaining('Ignoring invalid pattern'));
+  });
+
   it('returns all repos with default config', () => {
     const repos = [makeRepo(), makeRepo({ name: 'other' })];
 
@@ -163,6 +168,84 @@ describe('filterRepos', () => {
 
     expect(filterRepos({ repos, config })).toHaveLength(0);
   });
+
+  it('filters by org with only-orgs', () => {
+    const repos = [
+      makeRepo({ name: 'a', owner: { login: 'org-a' } }),
+      makeRepo({ name: 'b', owner: { login: 'org-b' } }),
+    ];
+    const config = { ...defaultConfig, onlyOrgs: ['org-a'] };
+    const result = filterRepos({ repos, config });
+
+    expect(result).toHaveLength(1);
+    expect(result[0].owner.login).toBe('org-a');
+  });
+
+  it('supports regex pattern in only-orgs', () => {
+    const repos = [
+      makeRepo({ name: 'web', owner: { login: 'acme-web' } }),
+      makeRepo({ name: 'api', owner: { login: 'acme-api' } }),
+      makeRepo({ name: 'x', owner: { login: 'other' } }),
+    ];
+    const config = { ...defaultConfig, onlyOrgs: ['/^acme-/'] };
+
+    expect(filterRepos({ repos, config })).toHaveLength(2);
+  });
+
+  it('excludes repos by org with exclude-orgs', () => {
+    const repos = [
+      makeRepo({ name: 'a', owner: { login: 'keep' } }),
+      makeRepo({ name: 'b', owner: { login: 'drop' } }),
+    ];
+    const config = { ...defaultConfig, excludeOrgs: ['drop'] };
+    const result = filterRepos({ repos, config });
+
+    expect(result).toHaveLength(1);
+    expect(result[0].owner.login).toBe('keep');
+  });
+
+  it('supports mixed exact names and regex in exclude-orgs', () => {
+    const repos = [
+      makeRepo({ name: 'a', owner: { login: 'keep' } }),
+      makeRepo({ name: 'b', owner: { login: 'drop-this' } }),
+      makeRepo({ name: 'c', owner: { login: 'experiment-1' } }),
+    ];
+    const config = { ...defaultConfig, excludeOrgs: ['drop-this', '/^experiment-/'] };
+    const result = filterRepos({ repos, config });
+
+    expect(result).toHaveLength(1);
+    expect(result[0].owner.login).toBe('keep');
+  });
+
+  it('matches orgs case-sensitively', () => {
+    const repos = [makeRepo({ name: 'a', owner: { login: 'Org-A' } })];
+    const config = { ...defaultConfig, onlyOrgs: ['org-a'] };
+
+    expect(filterRepos({ repos, config })).toHaveLength(0);
+  });
+
+  it('applies only-orgs before the only-repos override on the narrowed set', () => {
+    const repos = [
+      makeRepo({ name: 'wanted', owner: { login: 'org-a' }, archived: true, fork: true }),
+      makeRepo({ name: 'wanted', owner: { login: 'org-b' } }),
+      makeRepo({ name: 'unwanted', owner: { login: 'org-a' } }),
+    ];
+    const config = { ...defaultConfig, onlyOrgs: ['org-a'], onlyRepos: ['wanted'] };
+    const result = filterRepos({ repos, config });
+
+    expect(result).toHaveLength(1);
+    expect(result[0].owner.login).toBe('org-a');
+    expect(result[0].name).toBe('wanted');
+  });
+
+  it('does not filter by org when org lists are empty', () => {
+    const repos = [
+      makeRepo({ name: 'a', owner: { login: 'org-a' } }),
+      makeRepo({ name: 'b', owner: { login: 'org-b' } }),
+    ];
+
+    expect(filterRepos({ repos, config: defaultConfig })).toHaveLength(2);
+  });
 });
 
 describe('mapRepos', () => {
@@ -211,8 +294,10 @@ describe('fetchRepos', () => {
   });
 
   it('handles pagination correctly', async () => {
-    const page1 = Array.from({ length: 100 }, (_, i) => makeRepo({ name: `repo${i}` }));
-    const page2 = Array.from({ length: 50 }, (_, i) => makeRepo({ name: `repo${i + 100}` }));
+    const page1 = Array.from({ length: 100 }, (_, index) => makeRepo({ name: `repo${index}` }));
+    const page2 = Array.from({ length: 50 }, (_, index) =>
+      makeRepo({ name: `repo${index + 100}` }),
+    );
     const mockOctokit: MockOctokit = {
       rest: {
         repos: {
@@ -313,7 +398,7 @@ describe('fetchRepos', () => {
     await expect(
       fetchRepos({ octokit: createMockOctokit(mockOctokit), config: defaultConfig }),
     ).rejects.toThrow(
-      'Failed to fetch repositories from GitHub API (HTTP 401): API Error. Verify that your github-token has the correct permissions.',
+      'Failed to fetch repositories from GitHub API: HTTP 401 API Error. Verify that your github-token has the correct permissions.',
     );
   });
 
@@ -331,6 +416,22 @@ describe('fetchRepos', () => {
       fetchRepos({ octokit: createMockOctokit(mockOctokit), config: defaultConfig }),
     ).rejects.toThrow(
       'Failed to fetch repositories from GitHub API: Network Error. Verify that your github-token has the correct permissions.',
+    );
+  });
+
+  it('never throws a blank error description when the API error has no message', async () => {
+    const mockOctokit: MockOctokit = {
+      rest: {
+        repos: {
+          listForAuthenticatedUser: vi.fn().mockRejectedValue(new Error('')),
+        },
+      },
+    };
+
+    await expect(
+      fetchRepos({ octokit: createMockOctokit(mockOctokit), config: defaultConfig }),
+    ).rejects.toThrow(
+      'Failed to fetch repositories from GitHub API: Error. Verify that your github-token has the correct permissions.',
     );
   });
 });

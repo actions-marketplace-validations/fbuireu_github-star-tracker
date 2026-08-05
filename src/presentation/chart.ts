@@ -1,9 +1,75 @@
+import { ChartCurve, ChartRange, ChartTheme } from '@config/types';
+import { STAR_MILESTONES } from '@domain/constants';
 import type { ForecastData } from '@domain/forecast';
-import { ForecastMethod } from '@domain/forecast';
 import { formatDate } from '@domain/formatting';
+import { repoStarSeries } from '@domain/snapshot';
 import type { History } from '@domain/types';
 import { getTranslations, interpolate, type Locale } from '@i18n';
-import { CHART, CHART_COMPARISON_COLORS, COLORS } from './constants';
+import {
+  CHART,
+  CHART_COMPARISON_COLORS,
+  CHART_POINT,
+  CHART_TENSION,
+  LIGHT_PALETTE,
+  MIN_SNAPSHOTS_FOR_CHART,
+  TREND_WINDOW,
+} from './constants';
+import {
+  buildForecastChartSeries,
+  movingAverageSeries,
+  resolvePalette,
+  selectChartSnapshots,
+} from './shared';
+import type { ColorPalette } from './types';
+
+const CHART_STYLE = {
+  translucentAlpha: '33',
+  titleFontSize: 16,
+  legendFontSize: 11,
+  legendHiddenFontSize: 12,
+  milestoneBorderWidth: 1,
+  milestoneFontSize: 10,
+  milestoneDash: [6, 6] as [number, number],
+  trendDash: [6, 4],
+  linearRegressionDash: [8, 4],
+  weightedMovingAverageDash: [4, 4],
+};
+
+interface CurveProps {
+  tension: number;
+  cubicInterpolationMode?: typeof ChartCurve.MONOTONE;
+}
+
+const CURVE_PROPS: Record<ChartCurve, CurveProps> = {
+  [ChartCurve.CATMULL_ROM]: { tension: CHART_TENSION.smooth },
+  [ChartCurve.CUBIC_BEZIER]: { tension: CHART_TENSION.smooth },
+  [ChartCurve.MONOTONE]: {
+    tension: CHART_TENSION.smooth,
+    cubicInterpolationMode: ChartCurve.MONOTONE,
+  },
+  [ChartCurve.ROUNDED_STEP]: {
+    tension: CHART_TENSION.smooth,
+    cubicInterpolationMode: ChartCurve.MONOTONE,
+  },
+};
+
+interface CurvePropsForParams {
+  smoothing: boolean;
+  curve: ChartCurve;
+}
+
+function curvePropsFor({ smoothing, curve }: CurvePropsForParams): CurveProps {
+  return smoothing ? CURVE_PROPS[curve] : { tension: CHART_TENSION.straight };
+}
+
+interface PointRadiusForParams {
+  showPoints: boolean;
+  radius: number;
+}
+
+function pointRadiusFor({ showPoints, radius }: PointRadiusForParams): number {
+  return showPoints ? radius : CHART_POINT.hidden;
+}
 
 interface ChartConfig {
   type: 'line';
@@ -16,11 +82,12 @@ interface ChartConfig {
 
 interface Dataset {
   label: string;
-  data: number[];
+  data: (number | null)[];
   borderColor: string;
   backgroundColor: string;
   fill: boolean;
   tension: number;
+  cubicInterpolationMode?: typeof ChartCurve.MONOTONE;
   pointRadius: number;
   pointHoverRadius: number;
   borderDash?: number[];
@@ -80,18 +147,20 @@ interface ChartOptions {
   };
 }
 
-export const MILESTONE_THRESHOLDS = [10, 50, 100, 500, 1_000, 5_000, 10_000] as const;
-
 interface BuildMilestoneAnnotationsParams {
   minStars: number;
   maxStars: number;
+  palette?: ColorPalette;
+  thresholds?: readonly number[];
 }
 
 export function buildMilestoneAnnotations({
   minStars,
   maxStars,
+  palette = LIGHT_PALETTE,
+  thresholds = STAR_MILESTONES,
 }: BuildMilestoneAnnotationsParams): AnnotationPlugin | null {
-  const visible = MILESTONE_THRESHOLDS.filter((m) => m > minStars && m < maxStars);
+  const visible = thresholds.filter((milestone) => milestone > minStars && milestone < maxStars);
 
   if (visible.length === 0) return null;
 
@@ -102,16 +171,16 @@ export function buildMilestoneAnnotations({
       type: 'line',
       yMin: milestone,
       yMax: milestone,
-      borderColor: COLORS.neutral,
-      borderWidth: 1,
-      borderDash: [6, 6],
+      borderColor: palette.neutral,
+      borderWidth: CHART_STYLE.milestoneBorderWidth,
+      borderDash: CHART_STYLE.milestoneDash,
       label: {
         display: true,
         content: `${milestone.toLocaleString('en-US')} ★`,
         position: 'start',
-        backgroundColor: `${COLORS.neutral}33`,
-        color: COLORS.neutral,
-        font: { size: 10 },
+        backgroundColor: `${palette.neutral}${CHART_STYLE.translucentAlpha}`,
+        color: palette.neutral,
+        font: { size: CHART_STYLE.milestoneFontSize },
       },
     };
   }
@@ -122,12 +191,16 @@ export function buildMilestoneAnnotations({
 interface BuildChartOptionsParams {
   title: string;
   showLegend: boolean;
+  beginAtZero: boolean;
+  palette: ColorPalette;
   annotation?: AnnotationPlugin | null;
 }
 
 function buildChartOptions({
   title,
   showLegend,
+  beginAtZero,
+  palette,
   annotation,
 }: BuildChartOptionsParams): ChartOptions {
   return {
@@ -138,52 +211,86 @@ function buildChartOptions({
         display: showLegend,
         position: 'top',
         labels: {
-          color: COLORS.text,
-          font: { size: showLegend ? 11 : 12 },
+          color: palette.text,
+          font: {
+            size: showLegend ? CHART_STYLE.legendFontSize : CHART_STYLE.legendHiddenFontSize,
+          },
         },
       },
       title: {
         display: true,
         text: title,
-        color: COLORS.text,
-        font: { size: 16, weight: 'bold' },
+        color: palette.text,
+        font: { size: CHART_STYLE.titleFontSize, weight: 'bold' },
       },
       ...(annotation ? { annotation } : {}),
     },
     scales: {
       x: {
-        grid: { color: COLORS.cellBorder },
-        ticks: { color: COLORS.neutral },
+        grid: { color: palette.cellBorder },
+        ticks: { color: palette.neutral },
       },
       y: {
-        grid: { color: COLORS.cellBorder },
-        ticks: { color: COLORS.neutral },
-        beginAtZero: false,
+        grid: { color: palette.cellBorder },
+        ticks: { color: palette.neutral },
+        beginAtZero,
       },
     },
   };
 }
 
-function buildChartUrl(config: ChartConfig): string {
-  const encodedConfig = encodeURIComponent(JSON.stringify(config));
+interface BuildStarsDatasetParams {
+  data: number[];
+  curveProps: CurveProps;
+  showPoints: boolean;
+  palette: ColorPalette;
+}
 
-  return `https://quickchart.io/chart?w=${CHART.width}&h=${CHART.height}&c=${encodedConfig}`;
+function buildStarsDataset({
+  data,
+  curveProps,
+  showPoints,
+  palette,
+}: BuildStarsDatasetParams): Dataset {
+  return {
+    label: 'Stars',
+    data,
+    borderColor: palette.accent,
+    backgroundColor: `${palette.accent}${CHART_STYLE.translucentAlpha}`,
+    fill: true,
+    ...curveProps,
+    pointRadius: pointRadiusFor({ showPoints, radius: CHART_POINT.primaryRadius }),
+    pointHoverRadius: CHART_POINT.primaryHoverRadius,
+  };
+}
+
+interface BuildChartUrlParams {
+  config: ChartConfig;
+  palette: ColorPalette;
+}
+
+function buildChartUrl({ config, palette }: BuildChartUrlParams): string {
+  const encodedConfig = encodeURIComponent(JSON.stringify(config));
+  const backgroundColor = encodeURIComponent(palette.white);
+
+  return `https://quickchart.io/chart?w=${CHART.width}&h=${CHART.height}&backgroundColor=${backgroundColor}&c=${encodedConfig}`;
 }
 
 interface PrepareChartDataParams {
   history: History;
   locale: Locale;
+  range?: ChartRange;
 }
 
-function prepareChartData({ history, locale }: PrepareChartDataParams): {
+function prepareChartData({ history, locale, range }: PrepareChartDataParams): {
   labels: string[];
   data: number[];
 } {
-  const snapshots = [...history.snapshots].slice(-CHART.maxDataPoints);
+  const snapshots = selectChartSnapshots({ snapshots: history.snapshots, range });
 
   return {
-    labels: snapshots.map((s) => formatDate({ timestamp: s.timestamp, locale })),
-    data: snapshots.map((s) => s.totalStars),
+    labels: snapshots.map((snapshot) => formatDate({ timestamp: snapshot.timestamp, locale })),
+    data: snapshots.map((snapshot) => snapshot.totalStars),
   };
 }
 
@@ -192,6 +299,8 @@ interface BuildChartConfigParams {
   datasets: Dataset[];
   title: string;
   showLegend: boolean;
+  beginAtZero: boolean;
+  palette: ColorPalette;
   annotation?: AnnotationPlugin | null;
 }
 
@@ -200,12 +309,14 @@ function buildChartConfig({
   datasets,
   title,
   showLegend,
+  beginAtZero,
+  palette,
   annotation,
 }: BuildChartConfigParams): ChartConfig {
   return {
     type: 'line',
     data: { labels, datasets },
-    options: buildChartOptions({ title, showLegend, annotation }),
+    options: buildChartOptions({ title, showLegend, beginAtZero, palette, annotation }),
   };
 }
 
@@ -213,44 +324,74 @@ interface GenerateChartUrlParams {
   history: History;
   title?: string;
   locale: Locale;
+  smoothing?: boolean;
+  curve?: ChartCurve;
+  showPoints?: boolean;
+  milestones?: boolean;
+  beginAtZero?: boolean;
+  theme?: ChartTheme;
+  customMilestones?: readonly number[];
+  range?: ChartRange;
+  trendLine?: boolean;
 }
 
 export function generateChartUrl({
   history,
   title,
   locale,
+  smoothing = true,
+  curve = ChartCurve.MONOTONE,
+  showPoints = true,
+  milestones = true,
+  beginAtZero = false,
+  theme = ChartTheme.AUTO,
+  customMilestones,
+  range = ChartRange.ALL,
+  trendLine = false,
 }: GenerateChartUrlParams): string | null {
-  if (!history.snapshots || history.snapshots.length < 2) {
+  if (history.snapshots.length < MIN_SNAPSHOTS_FOR_CHART) {
     return null;
   }
 
   const t = getTranslations(locale);
+  const palette = resolvePalette(theme);
+  const curveProps = curvePropsFor({ smoothing, curve });
   const chartTitle = title ?? t.report.starHistory;
-  const { labels, data } = prepareChartData({ history, locale });
-  const datasets: Dataset[] = [
-    {
-      label: 'Stars',
-      data,
-      borderColor: COLORS.accent,
-      backgroundColor: `${COLORS.accent}33`,
-      fill: true,
-      tension: 0.4,
-      pointRadius: 3,
-      pointHoverRadius: 6,
-    },
-  ];
+  const { labels, data } = prepareChartData({ history, locale, range });
+  const datasets: Dataset[] = [buildStarsDataset({ data, curveProps, showPoints, palette })];
+
+  if (trendLine) {
+    datasets.push({
+      label: t.report.trendLine,
+      data: movingAverageSeries({ values: data, window: TREND_WINDOW }),
+      borderColor: palette.neutral,
+      backgroundColor: 'transparent',
+      fill: false,
+      ...curveProps,
+      pointRadius: CHART_POINT.hidden,
+      pointHoverRadius: CHART_POINT.hidden,
+      borderDash: CHART_STYLE.trendDash,
+    });
+  }
+
   const minStars = Math.min(...data);
   const maxStars = Math.max(...data);
-  const annotation = buildMilestoneAnnotations({ minStars, maxStars });
+  const thresholds =
+    customMilestones && customMilestones.length > 0 ? customMilestones : STAR_MILESTONES;
+  const annotation = milestones
+    ? buildMilestoneAnnotations({ minStars, maxStars, palette, thresholds })
+    : null;
   const config = buildChartConfig({
     labels,
     datasets,
     title: chartTitle,
     showLegend: false,
+    beginAtZero,
+    palette,
     annotation,
   });
 
-  return buildChartUrl(config);
+  return buildChartUrl({ config, palette });
 }
 
 interface GeneratePerRepoChartUrlParams {
@@ -258,6 +399,12 @@ interface GeneratePerRepoChartUrlParams {
   repoFullName: string;
   title?: string;
   locale: Locale;
+  smoothing?: boolean;
+  curve?: ChartCurve;
+  showPoints?: boolean;
+  beginAtZero?: boolean;
+  theme?: ChartTheme;
+  range?: ChartRange;
 }
 
 export function generatePerRepoChartUrl({
@@ -265,35 +412,35 @@ export function generatePerRepoChartUrl({
   repoFullName,
   title,
   locale,
+  smoothing = true,
+  curve = ChartCurve.MONOTONE,
+  showPoints = true,
+  beginAtZero = false,
+  theme = ChartTheme.AUTO,
+  range = ChartRange.ALL,
 }: GeneratePerRepoChartUrlParams): string | null {
-  if (!history.snapshots || history.snapshots.length < 2) {
+  if (history.snapshots.length < MIN_SNAPSHOTS_FOR_CHART) {
     return null;
   }
 
-  const snapshots = [...history.snapshots].slice(-CHART.maxDataPoints);
-  const labels = snapshots.map((s) => formatDate({ timestamp: s.timestamp, locale }));
-  const data = snapshots.map((s) => {
-    const repo = s.repos.find((r) => r.fullName === repoFullName);
-
-    return repo?.stars ?? 0;
-  });
+  const palette = resolvePalette(theme);
+  const curveProps = curvePropsFor({ smoothing, curve });
+  const snapshots = selectChartSnapshots({ snapshots: history.snapshots, range });
+  const labels = snapshots.map((snapshot) => formatDate({ timestamp: snapshot.timestamp, locale }));
+  const data = repoStarSeries({ snapshots, repoFullName });
   const chartTitle = title ?? `${repoFullName} Star History`;
-  const datasets: Dataset[] = [
-    {
-      label: 'Stars',
-      data,
-      borderColor: COLORS.accent,
-      backgroundColor: `${COLORS.accent}33`,
-      fill: true,
-      tension: 0.4,
-      pointRadius: 3,
-      pointHoverRadius: 6,
-    },
-  ];
+  const datasets: Dataset[] = [buildStarsDataset({ data, curveProps, showPoints, palette })];
 
-  const config = buildChartConfig({ labels, datasets, title: chartTitle, showLegend: false });
+  const config = buildChartConfig({
+    labels,
+    datasets,
+    title: chartTitle,
+    showLegend: false,
+    beginAtZero,
+    palette,
+  });
 
-  return buildChartUrl(config);
+  return buildChartUrl({ config, palette });
 }
 
 interface GenerateComparisonChartUrlParams {
@@ -301,6 +448,12 @@ interface GenerateComparisonChartUrlParams {
   repoNames: string[];
   title?: string;
   locale: Locale;
+  smoothing?: boolean;
+  curve?: ChartCurve;
+  showPoints?: boolean;
+  beginAtZero?: boolean;
+  theme?: ChartTheme;
+  range?: ChartRange;
 }
 
 export function generateComparisonChartUrl({
@@ -308,39 +461,51 @@ export function generateComparisonChartUrl({
   repoNames,
   title,
   locale,
+  smoothing = true,
+  curve = ChartCurve.MONOTONE,
+  showPoints = true,
+  beginAtZero = false,
+  theme = ChartTheme.AUTO,
+  range = ChartRange.ALL,
 }: GenerateComparisonChartUrlParams): string | null {
-  if (!history.snapshots || history.snapshots.length < 2 || repoNames.length === 0) {
+  if (history.snapshots.length < MIN_SNAPSHOTS_FOR_CHART || repoNames.length === 0) {
     return null;
   }
 
   const t = getTranslations(locale);
+  const palette = resolvePalette(theme);
+  const curveProps = curvePropsFor({ smoothing, curve });
   const chartTitle = title ?? t.report.topRepositories;
-  const snapshots = [...history.snapshots].slice(-CHART.maxDataPoints);
-  const labels = snapshots.map((s) => formatDate({ timestamp: s.timestamp, locale }));
+  const snapshots = selectChartSnapshots({ snapshots: history.snapshots, range });
+  const labels = snapshots.map((snapshot) => formatDate({ timestamp: snapshot.timestamp, locale }));
   const capped = repoNames.slice(0, CHART.maxComparison);
   const owners = new Set(capped.map((name) => name.split('/')[0]));
   const useShortLabels = owners.size === 1;
   const datasets: Dataset[] = capped.map((repoName, index) => {
-    const data = snapshots.map((s) => {
-      const repo = s.repos.find((r) => r.fullName === repoName);
-      return repo?.stars ?? 0;
-    });
+    const data = repoStarSeries({ snapshots, repoFullName: repoName });
     const color = CHART_COMPARISON_COLORS[index % CHART_COMPARISON_COLORS.length];
 
     return {
       label: useShortLabels ? repoName.split('/')[1] : repoName,
       data,
       borderColor: color,
-      backgroundColor: `${color}33`,
+      backgroundColor: `${color}${CHART_STYLE.translucentAlpha}`,
       fill: false,
-      tension: 0.4,
-      pointRadius: 2,
-      pointHoverRadius: 5,
+      ...curveProps,
+      pointRadius: pointRadiusFor({ showPoints, radius: CHART_POINT.secondaryRadius }),
+      pointHoverRadius: CHART_POINT.secondaryHoverRadius,
     };
   });
-  const config = buildChartConfig({ labels, datasets, title: chartTitle, showLegend: true });
+  const config = buildChartConfig({
+    labels,
+    datasets,
+    title: chartTitle,
+    showLegend: true,
+    beginAtZero,
+    palette,
+  });
 
-  return buildChartUrl(config);
+  return buildChartUrl({ config, palette });
 }
 
 interface GenerateForecastChartUrlParams {
@@ -348,6 +513,12 @@ interface GenerateForecastChartUrlParams {
   forecastData: ForecastData;
   locale: Locale;
   title?: string;
+  smoothing?: boolean;
+  curve?: ChartCurve;
+  showPoints?: boolean;
+  beginAtZero?: boolean;
+  theme?: ChartTheme;
+  range?: ChartRange;
 }
 
 export function generateForecastChartUrl({
@@ -355,68 +526,63 @@ export function generateForecastChartUrl({
   forecastData,
   locale,
   title,
+  smoothing = true,
+  curve = ChartCurve.MONOTONE,
+  showPoints = true,
+  beginAtZero = false,
+  theme = ChartTheme.AUTO,
+  range = ChartRange.ALL,
 }: GenerateForecastChartUrlParams): string | null {
-  if (!history.snapshots || history.snapshots.length < 2) {
+  if (history.snapshots.length < MIN_SNAPSHOTS_FOR_CHART) {
     return null;
   }
 
   const t = getTranslations(locale);
+  const palette = resolvePalette(theme);
+  const curveProps = curvePropsFor({ smoothing, curve });
   const chartTitle = title ?? t.forecast.sectionTitle;
-  const snapshots = [...history.snapshots].slice(-CHART.maxDataPoints);
-  const historicalLabels = snapshots.map((s) => formatDate({ timestamp: s.timestamp, locale }));
-  const historicalData = snapshots.map((s) => s.totalStars);
-  const forecastLabels = forecastData.aggregate.forecasts[0].points.map((p) =>
-    interpolate({ template: t.forecast.week, params: { n: p.weekOffset } }),
+  const snapshots = selectChartSnapshots({ snapshots: history.snapshots, range });
+  const historicalLabels = snapshots.map((snapshot) =>
+    formatDate({ timestamp: snapshot.timestamp, locale }),
+  );
+  const historicalData = snapshots.map((snapshot) => snapshot.totalStars);
+  const forecastLabels = forecastData.aggregate.forecasts[0].points.map((point) =>
+    interpolate({ template: t.forecast.week, params: { n: point.weekOffset } }),
   );
   const allLabels = [...historicalLabels, ...forecastLabels];
-  const lrForecast = forecastData.aggregate.forecasts.find(
-    (f) => f.method === ForecastMethod.LINEAR_REGRESSION,
-  );
-  const wmaForecast = forecastData.aggregate.forecasts.find(
-    (f) => f.method === ForecastMethod.WEIGHTED_MOVING_AVERAGE,
-  );
-  const lastHistorical = historicalData.at(-1) ?? 0;
-  const padLength = historicalData.length;
+  const series = buildForecastChartSeries({ historicalData, forecastData });
   const datasets: Dataset[] = [
     {
       label: t.report.starHistory,
-      data: [...historicalData, ...new Array(forecastLabels.length).fill(null)],
-      borderColor: COLORS.accent,
-      backgroundColor: `${COLORS.accent}33`,
+      data: series.historical,
+      borderColor: palette.accent,
+      backgroundColor: `${palette.accent}${CHART_STYLE.translucentAlpha}`,
       fill: true,
-      tension: 0.4,
-      pointRadius: 3,
-      pointHoverRadius: 6,
+      ...curveProps,
+      pointRadius: pointRadiusFor({ showPoints, radius: CHART_POINT.primaryRadius }),
+      pointHoverRadius: CHART_POINT.primaryHoverRadius,
     },
     {
       label: t.forecast.linearRegression,
-      data: [
-        ...new Array(padLength - 1).fill(null),
-        lastHistorical,
-        ...(lrForecast?.points.map((p) => p.predicted) ?? []),
-      ],
-      borderColor: COLORS.positive,
+      data: series.linearRegression,
+      borderColor: palette.positive,
       backgroundColor: 'transparent',
       fill: false,
-      tension: 0.4,
-      pointRadius: 2,
-      pointHoverRadius: 5,
-      borderDash: [8, 4],
+      ...curveProps,
+      pointRadius: pointRadiusFor({ showPoints, radius: CHART_POINT.secondaryRadius }),
+      pointHoverRadius: CHART_POINT.secondaryHoverRadius,
+      borderDash: CHART_STYLE.linearRegressionDash,
     },
     {
       label: t.forecast.weightedMovingAverage,
-      data: [
-        ...new Array(padLength - 1).fill(null),
-        lastHistorical,
-        ...(wmaForecast?.points.map((p) => p.predicted) ?? []),
-      ],
-      borderColor: COLORS.negative,
+      data: series.weightedMovingAverage,
+      borderColor: palette.negative,
       backgroundColor: 'transparent',
       fill: false,
-      tension: 0.4,
-      pointRadius: 2,
-      pointHoverRadius: 5,
-      borderDash: [4, 4],
+      ...curveProps,
+      pointRadius: pointRadiusFor({ showPoints, radius: CHART_POINT.secondaryRadius }),
+      pointHoverRadius: CHART_POINT.secondaryHoverRadius,
+      borderDash: CHART_STYLE.weightedMovingAverageDash,
     },
   ];
 
@@ -425,7 +591,9 @@ export function generateForecastChartUrl({
     datasets,
     title: chartTitle,
     showLegend: true,
+    beginAtZero,
+    palette,
   });
 
-  return buildChartUrl(config);
+  return buildChartUrl({ config, palette });
 }

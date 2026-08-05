@@ -1,22 +1,11 @@
+import { makeRepoInfo } from '@shared/tests';
 import { describe, expect, it } from 'vitest';
 import { compareStars, createSnapshot } from './comparison';
-import type { RepoInfo, Snapshot } from './types';
-
-function makeRepoData(name: string, stars: number): RepoInfo {
-  return {
-    owner: 'user',
-    name,
-    fullName: `user/${name}`,
-    private: false,
-    archived: false,
-    fork: false,
-    stars,
-  };
-}
+import type { Snapshot } from './types';
 
 describe('compareStars', () => {
   it('handles first run with no previous snapshot', () => {
-    const repos = [makeRepoData('repo-a', 10), makeRepoData('repo-b', 20)];
+    const repos = [makeRepoInfo('repo-a', 10), makeRepoInfo('repo-b', 20)];
     const result = compareStars({ currentRepos: repos, previousSnapshot: null });
 
     expect(result.summary.totalStars).toBe(30);
@@ -28,7 +17,7 @@ describe('compareStars', () => {
   });
 
   it('computes deltas against previous snapshot', () => {
-    const repos = [makeRepoData('repo-a', 15), makeRepoData('repo-b', 18)];
+    const repos = [makeRepoInfo('repo-a', 15), makeRepoInfo('repo-b', 18)];
     const previous: Snapshot = {
       timestamp: '2026-01-01T00:00:00Z',
       totalStars: 30,
@@ -47,15 +36,15 @@ describe('compareStars', () => {
     expect(result.summary.lostStars).toBe(2);
     expect(result.summary.changed).toBe(true);
 
-    const repoA = result.repos.find((r) => r.name === 'repo-a');
+    const repoA = result.repos.find((repo) => repo.name === 'repo-a');
     expect(repoA?.delta).toBe(5);
 
-    const repoB = result.repos.find((r) => r.name === 'repo-b');
+    const repoB = result.repos.find((repo) => repo.name === 'repo-b');
     expect(repoB?.delta).toBe(-2);
   });
 
   it('detects removed repositories', () => {
-    const repos = [makeRepoData('repo-a', 10)];
+    const repos = [makeRepoInfo('repo-a', 10)];
     const previous: Snapshot = {
       timestamp: '2026-01-01T00:00:00Z',
       totalStars: 30,
@@ -66,7 +55,7 @@ describe('compareStars', () => {
     };
 
     const result = compareStars({ currentRepos: repos, previousSnapshot: previous });
-    const removed = result.repos.find((r) => r.name === 'repo-b');
+    const removed = result.repos.find((repo) => repo.name === 'repo-b');
 
     expect(removed?.isRemoved).toBe(true);
     expect(removed?.current).toBe(0);
@@ -75,7 +64,7 @@ describe('compareStars', () => {
   });
 
   it('detects newly added repositories', () => {
-    const repos = [makeRepoData('repo-a', 10), makeRepoData('new-repo', 5)];
+    const repos = [makeRepoInfo('repo-a', 10), makeRepoInfo('new-repo', 5)];
     const previous: Snapshot = {
       timestamp: '2026-01-01T00:00:00Z',
       totalStars: 10,
@@ -83,7 +72,7 @@ describe('compareStars', () => {
     };
 
     const result = compareStars({ currentRepos: repos, previousSnapshot: previous });
-    const newRepo = result.repos.find((r) => r.name === 'new-repo');
+    const newRepo = result.repos.find((repo) => repo.name === 'new-repo');
 
     expect(newRepo?.isNew).toBe(true);
     expect(newRepo?.delta).toBe(0);
@@ -91,7 +80,7 @@ describe('compareStars', () => {
   });
 
   it('reports no changes when stars are identical', () => {
-    const repos = [makeRepoData('repo-a', 10)];
+    const repos = [makeRepoInfo('repo-a', 10)];
     const previous: Snapshot = {
       timestamp: '2026-01-01T00:00:00Z',
       totalStars: 10,
@@ -106,7 +95,7 @@ describe('compareStars', () => {
 
 describe('createSnapshot', () => {
   it('creates a snapshot with timestamp and repo data', () => {
-    const repos = [makeRepoData('repo-a', 10)];
+    const repos = [makeRepoInfo('repo-a', 10)];
     const summary = {
       totalStars: 10,
       totalPrevious: 0,

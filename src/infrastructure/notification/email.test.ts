@@ -1,9 +1,13 @@
+import * as core from '@actions/core';
+import nodemailer from 'nodemailer';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { type EmailConfig, getEmailConfig, sendEmail } from './email';
 
 vi.mock('@actions/core', () => ({
   getInput: vi.fn().mockReturnValue(''),
   info: vi.fn(),
   warning: vi.fn(),
+  setSecret: vi.fn(),
 }));
 
 vi.mock('nodemailer', () => {
@@ -16,15 +20,11 @@ vi.mock('nodemailer', () => {
   };
 });
 
-import * as core from '@actions/core';
-import nodemailer from 'nodemailer';
-import { type EmailConfig, getEmailConfig, sendEmail } from './email';
-
-beforeEach(() => {
-  vi.clearAllMocks();
-});
-
 describe('getEmailConfig', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
   it('returns null when smtp-host is not provided', () => {
     vi.mocked(core.getInput).mockReturnValue('');
     expect(getEmailConfig('en')).toBeNull();
@@ -70,6 +70,10 @@ describe('getEmailConfig', () => {
 });
 
 describe('sendEmail', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
   const emailConfig: EmailConfig = {
     host: 'smtp.example.com',
     port: 587,
@@ -125,6 +129,60 @@ describe('sendEmail', () => {
     });
   });
 
+  it('logs the recipient address alongside the message ID', async () => {
+    await sendEmail({
+      emailConfig,
+      subject: 'Subject',
+      htmlBody: '<p>Body</p>',
+    });
+
+    expect(core.info).toHaveBeenCalledWith(expect.stringContaining('recipient@example.com'));
+  });
+
+  it('warns when recipients are rejected', async () => {
+    const transport = vi.mocked(nodemailer.createTransport)({});
+    vi.mocked(transport.sendMail).mockResolvedValueOnce({
+      messageId: 'id',
+      rejected: ['bad@example.com'],
+    } as never);
+
+    await sendEmail({
+      emailConfig,
+      subject: 'Subject',
+      htmlBody: '<p>Body</p>',
+    });
+
+    expect(core.warning).toHaveBeenCalledWith(expect.stringContaining('bad@example.com'));
+  });
+
+  it('keeps the from address as-is when it already contains an email', async () => {
+    await sendEmail({
+      emailConfig: { ...emailConfig, from: 'Star Tracker <noreply@example.com>' },
+      subject: 'Subject',
+      htmlBody: '<p>Body</p>',
+    });
+
+    const mockSendMail = vi.mocked(nodemailer.createTransport).mock.results[0]?.value?.sendMail;
+
+    expect(mockSendMail).toHaveBeenCalledWith(
+      expect.objectContaining({ from: 'Star Tracker <noreply@example.com>' }),
+    );
+  });
+
+  it('combines a name-only from with the SMTP username as the address', async () => {
+    await sendEmail({
+      emailConfig: { ...emailConfig, from: 'Star Tracker', username: 'user@example.com' },
+      subject: 'Subject',
+      htmlBody: '<p>Body</p>',
+    });
+
+    const mockSendMail = vi.mocked(nodemailer.createTransport).mock.results[0]?.value?.sendMail;
+
+    expect(mockSendMail).toHaveBeenCalledWith(
+      expect.objectContaining({ from: 'Star Tracker <user@example.com>' }),
+    );
+  });
+
   it('uses secure=true for port 465', async () => {
     await sendEmail({
       emailConfig: { ...emailConfig, port: 465 },
@@ -147,5 +205,24 @@ describe('sendEmail', () => {
     expect(nodemailer.createTransport).toHaveBeenCalledWith(
       expect.objectContaining({ auth: undefined }),
     );
+  });
+
+  it('falls back to 587 and warns when smtp-port is not a usable port', () => {
+    vi.mocked(core.getInput).mockImplementation((name: string) =>
+      name === 'smtp-host' ? 'smtp.test.com' : name === 'smtp-port' ? 'not-a-port' : '',
+    );
+
+    expect(getEmailConfig('en')?.port).toBe(587);
+    expect(core.warning).toHaveBeenCalledWith(expect.stringContaining('Invalid smtp-port'));
+  });
+
+  it('masks the SMTP password so it cannot leak through error text', () => {
+    vi.mocked(core.getInput).mockImplementation((name: string) =>
+      name === 'smtp-host' ? 'smtp.test.com' : name === 'smtp-password' ? 'hunter2' : '',
+    );
+
+    getEmailConfig('en');
+
+    expect(core.setSecret).toHaveBeenCalledWith('hunter2');
   });
 });

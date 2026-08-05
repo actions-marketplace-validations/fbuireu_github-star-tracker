@@ -1,0 +1,89 @@
+# src/config
+
+The only place that reads GitHub Action inputs for tracking behaviour and the only place that reads the
+repo's `star-tracker.yml`. It produces a fully-populated `Config` — every field always present, never
+`undefined` — plus the `Visibility` and `Chart*` enums other layers reference. It does **not** read the SMTP
+inputs (`@infrastructure/notification` does), does **not** read `github-token` / `github-api-url`
+(`@application/tracker` does), and does **not** validate value *ranges*.
+
+`types.ts` holds `Config` and the enums, `defaults.ts` holds `DEFAULTS` and `VISIBILITY_CONFIG`,
+`parsers.ts` holds pure coercions used only here, and `loader.ts` is the resolver.
+
+## Invariants & rules
+
+- **Precedence, per key: action input → config-file value → `DEFAULTS`.** Never reversed. Enum keys use
+  `input || fileValue`, so an empty-string input falls through; everything else uses `??` on the *parsed*
+  result, so a value that parses to `false` or `0` still beats the file.
+- **Only two things throw**: an unknown `visibility`, and an invalid `data-branch`. Everything else — bad
+  enum, bad bool, bad number, bad colour, malformed YAML — warns and falls back. A missing config file is
+  `info`, not a warning.
+- `visibility` is resolved with `Object.values(...).find(...)`, not an object index, so `visibility: toString`
+  is rejected instead of resolving off `Object.prototype`.
+- **`data-branch` validation** rejects `''`, `'@'`, whitespace, `~ ^ : ? * [ \`, control characters, the
+  sequences `..` `//` `/.` `@{`, a leading `-` `.` `/`, and a trailing `/` `.` `.lock`. It accepts
+  `data/star-tracker`, `_star-data`, `stars@v2`, `v1.2.3`, `UPPER_case-1`.
+- **Booleans use two different vocabularies.** Action inputs accept only `true`/`false` — `yes`, `on` and `1`
+  are **invalid** and warn. Config-file values accept the full YAML set (`true|yes|on|y|1` /
+  `false|no|off|n|0`), and a quoted `"false"` is `false`, not a truthy string.
+- **Numbers are strict.** A string input must match `/^[+-]?\d+$/` after trimming, so `'3.7'` and `'42abc'`
+  are rejected outright with no partial parse; a YAML number is truncated with `Math.trunc`.
+- **Sign is enforced per key, and which parser a key uses is load-bearing.** `max-history`, `top-repos` and
+  `smart-sampling-pages` use `parsePositiveNumber` (`> 0`), so `0` and negatives fall back to the default.
+  `min-stars`, `chart-max-points` and `smart-sampling-threshold` use `parseNonNegativeNumber` (`>= 0`), which
+  is what keeps `chart-max-points: 0` alive as a meaningful value — full history at weekly resolution — while
+  still rejecting negatives. Rejecting `max-history: 0` matters downstream: `addSnapshot` trims with
+  `.slice(-maxHistory)`, and `slice(-0)` would keep the entire array.
+- `chart-line-width` is the only decimal field and requires finite **and > 0**.
+  `notification-threshold` matches `'auto'` **exactly** — no trim, no case-fold, so `'Auto'` is rejected.
+- **Lists**: `parseList` returns `undefined` (not `[]`) for empty input so the file value can still win, while
+  `toStringList` **preserves an empty array** — `only_repos: []` in the file yields `[]` rather than falling
+  back to `DEFAULTS`.
+- **`chart-custom-milestones` has special-cased precedence**: a non-empty *input* wins outright, even when it
+  parses to `[]`, and the file value is not consulted. It keeps finite values `> 0`, de-duplicates and sorts
+  ascending, and uses `parseInt` per segment, so `'2500abc'` yields 2500 unlike the strict number parser.
+- **Config-file keys are derived mechanically** from `Object.keys(DEFAULTS)`. Both `snake_case` and
+  `kebab-case` are read, `snake_case` wins when both are present, and there is no hand-written key map —
+  adding a `Config` field automatically makes it file-readable.
+- **`sendOnNoChanges` is the one key that cannot come from the config file.** Input-only, parsed with a bare
+  boolean parser, and an invalid value is silently ignored with no warning.
+- If `readOnly` is true and the threshold is anything other than `0`, `loadConfig` warns: the baseline lives on
+  a branch a read-only run never updates.
+
+## action.yml cross-check
+
+`action-inputs.test.ts` reads the real `action.yml` and asserts every `Config` key except `sendOnNoChanges`
+has a kebab-case input whose `default` is **empty**, and that only `config-path`, `send-on-no-changes` and
+`smtp-port` carry a non-empty default. **Never add a `default:` to an overridable input** — the test fails and
+the config file would stop working, because a non-empty default always beats it.
+
+Real defaults therefore live in `defaults.ts` and are only *described* in the `action.yml` prose. Every
+overridable input does state its default in that prose today, so check `defaults.ts` before trusting a
+description rather than assuming one is missing. Two of those descriptions promise behaviour this folder does
+not implement:
+
+- `chart-max-points` says "capped at 365". That clamp is **not** applied here — `loadConfig` passes the raw
+  integer through, and `MAX_HISTORY_BUCKETS` in `@domain/star-history` does the capping.
+- `chart-custom-milestones` says it "Requires chart-milestones to be enabled". Nothing enforces that; the two
+  resolve independently, so custom milestones combined with `chart-milestones: false` silently do nothing.
+
+Two literals are also duplicated between the manifest and code, so changing `action.yml` alone has no effect:
+`smtp-port`'s `'587'` (`DEFAULT_SMTP_PORT` in `@infrastructure/notification/email`) and `config-path`'s
+`'star-tracker.yml'` (`DEFAULT_CONFIG_PATH` in `loader.ts`).
+
+## Gotchas
+
+- **`loadConfigFile` returns every file key, with `undefined` for absent ones**, so `'minStars' in fileConfig`
+  is not a presence test — use `??`. It returns `{}` when the file is missing, empty, unparseable, or parses
+  to a non-object.
+- **Config-file parse failures are mostly silent.** Only the enum fields warn, because they are fed
+  `input || fileValue`; everything else warns on the input side only. A bad `min_stars: "abc"` in the YAML
+  falls back with no warning at all.
+- **An unquoted hex colour in YAML is parsed as a number** (`chart_line_color: 123456`), and the file parser
+  accepts strings only, so it silently becomes the default. Quote it. `action.yml` warns about the
+  `#`-starts-a-comment half of this trap but not the numeric half.
+- `resolveEnum` takes `input || fileValue`, so an empty string means "not set" and returns the fallback
+  **without** warning. Only a non-empty, non-matching value warns.
+- **Warning wording is asserted verbatim**, including the Oxford comma
+  (`'Invalid locale "fr". Must be "en", "es", "ca", or "it". Falling back to "en"'`). The generic parser
+  message deliberately does *not* name a fallback, because the config file may still supply one.
+- `loader.test.ts` (~1120 lines) is the real specification for this folder.
