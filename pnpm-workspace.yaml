@@ -1,10 +1,9 @@
 packages:
   - ./
+savePrefix: ""
 minimumReleaseAge: 4320 # 3 days
 blockExoticSubdeps: true
 allowBuilds:
   esbuild: true
   "@biomejs/biome": true
-minimumReleaseAgeExclude:
-  # Renovate security update: js-yaml@5.2.2
-  - js-yaml@5.2.2
+  

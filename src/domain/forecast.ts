@@ -1,170 +1,102 @@
-import {
-  FORECAST_WEEKS,
-  MIN_RATE_INTERVAL_DAYS,
-  MIN_SNAPSHOTS_FOR_FORECAST,
-  MS_PER_DAY,
-} from './constants';
-import { repoStarSeries } from './snapshot';
-import { toEpochMs } from './time';
-import type { History } from './types';
-
-const DAYS_PER_WEEK = 7;
+import { DAYS_PER_WEEK, FORECAST_WEEKS, MIN_SNAPSHOTS_FOR_FORECAST } from "./constants";
+import { calendarDays, fitTrend, type SeriesPoint, weightedDailyRate } from "./growth";
+import { repoStarSeries } from "./snapshot";
+import type { History } from "./types";
 
 export interface ForecastPoint {
-  weekOffset: number;
-  predicted: number;
+	weekOffset: number;
+	predicted: number;
 }
 
 export const ForecastMethod = {
-  LINEAR_REGRESSION: 'linear-regression',
-  WEIGHTED_MOVING_AVERAGE: 'weighted-moving-average',
+	LINEAR_REGRESSION: "linear-regression",
+	WEIGHTED_MOVING_AVERAGE: "weighted-moving-average",
 } as const;
 
 export type ForecastMethod = (typeof ForecastMethod)[keyof typeof ForecastMethod];
 
 export interface ForecastResult {
-  method: ForecastMethod;
-  points: ForecastPoint[];
+	method: ForecastMethod;
+	points: ForecastPoint[];
 }
 
+export const ForecastSource = {
+	OWN: "own",
+	AGGREGATE: "aggregate",
+} as const;
+
+export type ForecastSource = (typeof ForecastSource)[keyof typeof ForecastSource];
+
 export interface RepoForecast {
-  repoFullName: string;
-  forecasts: ForecastResult[];
+	repoFullName: string;
+	source: ForecastSource;
+	forecasts: ForecastResult[];
 }
 
 export interface ForecastData {
-  aggregate: { forecasts: ForecastResult[] };
-  repos: RepoForecast[];
-}
-
-export interface SeriesPoint {
-  day: number;
-  value: number;
-}
-
-interface LinearRegressionResult {
-  slope: number;
-  intercept: number;
-}
-
-export function linearRegression(points: SeriesPoint[]): LinearRegressionResult {
-  const pointCount = points.length;
-  let sumX = 0;
-  let sumY = 0;
-  let sumXY = 0;
-  let sumXX = 0;
-
-  for (const point of points) {
-    sumX += point.day;
-    sumY += point.value;
-    sumXY += point.day * point.value;
-    sumXX += point.day * point.day;
-  }
-
-  const denominator = pointCount * sumXX - sumX * sumX;
-
-  if (denominator === 0) {
-    return { slope: 0, intercept: points.at(-1)?.value ?? 0 };
-  }
-
-  const slope = (pointCount * sumXY - sumX * sumY) / denominator;
-  const intercept = (sumY - slope * sumX) / pointCount;
-
-  return { slope, intercept };
-}
-
-const MIN_POINTS_FOR_WEIGHTED_AVERAGE = 2;
-
-export function weightedMovingAverage(points: SeriesPoint[]): number {
-  if (points.length < MIN_POINTS_FOR_WEIGHTED_AVERAGE) return 0;
-
-  const dailyRates: number[] = [];
-
-  for (let index = 1; index < points.length; index++) {
-    const elapsedDays = points[index].day - points[index - 1].day;
-    if (elapsedDays < MIN_RATE_INTERVAL_DAYS) continue;
-    dailyRates.push((points[index].value - points[index - 1].value) / elapsedDays);
-  }
-
-  if (dailyRates.length === 0) return 0;
-
-  let weightedSum = 0;
-  let totalWeight = 0;
-
-  for (let index = 0; index < dailyRates.length; index++) {
-    const weight = index + 1;
-    weightedSum += dailyRates[index] * weight;
-    totalWeight += weight;
-  }
-
-  return weightedSum / totalWeight;
+	aggregate: { forecasts: ForecastResult[] };
+	repos: RepoForecast[];
 }
 
 interface ComputeForecastParams {
-  history: History;
-  topRepoNames: string[];
+	history: History;
+	topRepoNames: string[];
+	historyForRepo?: (repoFullName: string) => History | null;
 }
 
 function clampPrediction(value: number): number {
-  return Math.max(0, Math.round(value));
+	return Math.max(0, Math.round(value));
 }
 
 function forecastFromSeries(points: SeriesPoint[]): ForecastResult[] {
-  const last = points.at(-1) ?? { day: 0, value: 0 };
-  const regression = linearRegression(points);
-  const wmaDailyRate = weightedMovingAverage(points);
-  const lrPoints: ForecastPoint[] = [];
-  const wmaPoints: ForecastPoint[] = [];
+	const last = points.at(-1) ?? { day: 0, value: 0 };
+	const regression = fitTrend(points);
+	const wmaDailyRate = weightedDailyRate(points);
+	const lrPoints: ForecastPoint[] = [];
+	const wmaPoints: ForecastPoint[] = [];
 
-  for (let weekOffset = 1; weekOffset <= FORECAST_WEEKS; weekOffset++) {
-    const forecastDays = weekOffset * DAYS_PER_WEEK;
-    lrPoints.push({
-      weekOffset,
-      predicted: clampPrediction(last.value + regression.slope * forecastDays),
-    });
-    wmaPoints.push({
-      weekOffset,
-      predicted: clampPrediction(last.value + wmaDailyRate * forecastDays),
-    });
-  }
+	for (let weekOffset = 1; weekOffset <= FORECAST_WEEKS; weekOffset++) {
+		const forecastDays = weekOffset * DAYS_PER_WEEK;
+		lrPoints.push({
+			weekOffset,
+			predicted: clampPrediction(last.value + regression.slope * forecastDays),
+		});
+		wmaPoints.push({
+			weekOffset,
+			predicted: clampPrediction(last.value + wmaDailyRate * forecastDays),
+		});
+	}
 
-  return [
-    { method: ForecastMethod.LINEAR_REGRESSION, points: lrPoints },
-    { method: ForecastMethod.WEIGHTED_MOVING_AVERAGE, points: wmaPoints },
-  ];
+	return [
+		{ method: ForecastMethod.LINEAR_REGRESSION, points: lrPoints },
+		{ method: ForecastMethod.WEIGHTED_MOVING_AVERAGE, points: wmaPoints },
+	];
 }
 
-function snapshotDays(history: History): number[] {
-  const times = history.snapshots.map((snapshot) => toEpochMs(snapshot.timestamp));
+export function computeForecast({ history, topRepoNames, historyForRepo }: ComputeForecastParams): ForecastData | null {
+	if (history.snapshots.length < MIN_SNAPSHOTS_FOR_FORECAST) {
+		return null;
+	}
 
-  if (times.some((timeMs) => timeMs === null)) {
-    return history.snapshots.map((_, index) => index * DAYS_PER_WEEK);
-  }
+	const toSeries = ({ values, days }: { values: number[]; days: number[] }): SeriesPoint[] =>
+		values.map((value, index) => ({ day: days[index], value }));
 
-  const first = times[0] as number;
+	const aggregateDays = calendarDays(history);
+	const totalValues = history.snapshots.map((snapshot) => snapshot.totalStars);
+	const aggregateForecasts = forecastFromSeries(toSeries({ values: totalValues, days: aggregateDays }));
+	const repos: RepoForecast[] = topRepoNames.map((repoFullName) => {
+		const candidate = historyForRepo?.(repoFullName);
+		const ownHistory = candidate && candidate.snapshots.length >= MIN_SNAPSHOTS_FOR_FORECAST ? candidate : null;
+		const fitted = ownHistory ?? history;
+		const days = ownHistory === null ? aggregateDays : calendarDays(ownHistory);
+		const values = repoStarSeries({ snapshots: fitted.snapshots, repoFullName });
 
-  return times.map((timeMs) => ((timeMs as number) - first) / MS_PER_DAY);
-}
+		return {
+			repoFullName,
+			source: ownHistory === null ? ForecastSource.AGGREGATE : ForecastSource.OWN,
+			forecasts: forecastFromSeries(toSeries({ values, days })),
+		};
+	});
 
-export function computeForecast({
-  history,
-  topRepoNames,
-}: ComputeForecastParams): ForecastData | null {
-  if (history.snapshots.length < MIN_SNAPSHOTS_FOR_FORECAST) {
-    return null;
-  }
-
-  const days = snapshotDays(history);
-  const toSeries = (values: number[]): SeriesPoint[] =>
-    values.map((value, index) => ({ day: days[index], value }));
-
-  const totalValues = history.snapshots.map((snapshot) => snapshot.totalStars);
-  const aggregateForecasts = forecastFromSeries(toSeries(totalValues));
-  const repos: RepoForecast[] = topRepoNames.map((repoFullName) => {
-    const values = repoStarSeries({ snapshots: history.snapshots, repoFullName });
-
-    return { repoFullName, forecasts: forecastFromSeries(toSeries(values)) };
-  });
-
-  return { aggregate: { forecasts: aggregateForecasts }, repos };
+	return { aggregate: { forecasts: aggregateForecasts }, repos };
 }

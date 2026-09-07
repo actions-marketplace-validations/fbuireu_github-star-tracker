@@ -1,3 +1,53 @@
+# [1.27.0](https://github.com/fbuireu/github-star-tracker/compare/v1.26.4...v1.27.0) (2026-09-06)
+
+
+### Features
+
+* **charts:** draw a growth forecast chart per top repository ([#186](https://github.com/fbuireu/github-star-tracker/issues/186)) ([ddf63da](https://github.com/fbuireu/github-star-tracker/commit/ddf63da7109365fa5b671ba7a59995bc85c5a5b8))
+
+## [1.26.4](https://github.com/fbuireu/github-star-tracker/compare/v1.26.3...v1.26.4) (2026-09-04)
+
+
+### Bug Fixes
+
+* assert garbage ([1cc10cc](https://github.com/fbuireu/github-star-tracker/commit/1cc10ccf1baff5f9da7d774bceb64e0534e1ac94))
+
+## [1.26.3](https://github.com/fbuireu/github-star-tracker/compare/v1.26.2...v1.26.3) (2026-09-01)
+
+
+### Bug Fixes
+
+* **deps:** update dependency nodemailer to v9.0.6 ([#183](https://github.com/fbuireu/github-star-tracker/issues/183)) ([c66b970](https://github.com/fbuireu/github-star-tracker/commit/c66b97092c4d8750ccf1949f123a95ae5eb50d85))
+
+## [1.26.2](https://github.com/fbuireu/github-star-tracker/compare/v1.26.1...v1.26.2) (2026-08-30)
+
+
+### Bug Fixes
+
+* **persistence:** repair a stargazers.json entry instead of crashing on it ([8b9d05b](https://github.com/fbuireu/github-star-tracker/commit/8b9d05b076eea605c5cec9eb5055620c28fdd51b))
+* **stargazers:** treat a fetch stopped by the page ceiling as incomplete ([db91748](https://github.com/fbuireu/github-star-tracker/commit/db917489de7ea4b248b3b1246c9b7f73e3dc08a3))
+
+## [1.26.1](https://github.com/fbuireu/github-star-tracker/compare/v1.26.0...v1.26.1) (2026-08-23)
+
+
+### Bug Fixes
+
+* **issues:** drop the public template for vulnerabilities ([5e94871](https://github.com/fbuireu/github-star-tracker/commit/5e9487163b551f9ad269b2652d12b610b3f703d7))
+
+# [1.26.0](https://github.com/fbuireu/github-star-tracker/compare/v1.25.1...v1.26.0) (2026-08-15)
+
+
+### Features
+
+* **report:** close the HTML report gaps against the markdown one ([88ac546](https://github.com/fbuireu/github-star-tracker/commit/88ac5460aa73a91529f540525120c846ad77a9e7))
+
+## [1.25.1](https://github.com/fbuireu/github-star-tracker/compare/v1.25.0...v1.25.1) (2026-08-14)
+
+
+### Bug Fixes
+
+* simplify arch and di + bump deps ([1bb4989](https://github.com/fbuireu/github-star-tracker/commit/1bb4989d3c33490f38a177fc9c8e7ab14b62f4d0))
+
 # [1.25.0](https://github.com/fbuireu/github-star-tracker/compare/v1.24.2...v1.25.0) (2026-08-06)
 
 

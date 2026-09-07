@@ -18,6 +18,7 @@ jobs:
   sync:
     name: Publish docs/wiki to the GitHub Wiki
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -36,12 +37,12 @@ jobs:
           rsync -a --delete --exclude='.git' docs/wiki/ "$WIKI_DIR/"
 
           cd "$WIKI_DIR"
-          git config user.name "Ferran Buireu"
-          git config user.email "fbuireu@gmail.com"
+          git config user.name "$COMMIT_NAME"
+          git config user.email "$COMMIT_EMAIL"
           git add -A
 
           if git diff --staged --quiet; then
-            echo "Wiki already up to date — nothing to publish."
+            echo "Wiki already up to date, nothing to publish."
             exit 0
           fi
 

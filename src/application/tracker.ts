@@ -1,317 +1,216 @@
-import * as core from '@actions/core';
-import * as github from '@actions/github';
-import { loadConfig } from '@config/loader';
-import { compareStars, createSnapshot } from '@domain/comparison';
-import { computeForecast } from '@domain/forecast';
-import { deltaIndicator } from '@domain/formatting';
-import { shouldNotify } from '@domain/notification';
-import { addSnapshot, getBaselineSnapshot } from '@domain/snapshot';
-import { buildStarHistory } from '@domain/star-history';
-import { buildStargazerMap, diffStargazers, type RepoStargazers } from '@domain/stargazers';
-import type { Summary } from '@domain/types';
-import { getTranslations, interpolate } from '@i18n';
-import { cleanup, initializeDataBranch } from '@infrastructure/git/worktree';
-import { getRepos } from '@infrastructure/github/filters';
-import { fetchAllStargazers } from '@infrastructure/github/stargazers';
-import { getEmailConfig, sendEmail } from '@infrastructure/notification/email';
-import {
-  commitAndPush,
-  pruneCharts,
-  readHistory,
-  readStargazers,
-  writeBadge,
-  writeChart,
-  writeCsv,
-  writeHistory,
-  writeHtmlReport,
-  writeReport,
-  writeStargazers,
-} from '@infrastructure/persistence/storage';
-import { retry } from '@octokit/plugin-retry';
-import { generateBadge } from '@presentation/badge';
-import { buildChartFiles, resolveChartHistory } from '@presentation/charts';
-import { generateCsvReport } from '@presentation/csv';
-import { generateHtmlReport } from '@presentation/html';
-import { generateMarkdownReport } from '@presentation/markdown';
-
-interface WithDataDirParams {
-  branch: string;
-  readOnly: boolean;
-  fn: (dataDir: string) => Promise<void>;
-}
-
-async function withDataDir({ branch, readOnly, fn }: WithDataDirParams): Promise<void> {
-  const dataDir = initializeDataBranch({ dataBranch: branch, readOnly });
-  try {
-    await fn(dataDir);
-  } finally {
-    cleanup(dataDir);
-  }
-}
+import * as core from "@actions/core";
+import * as github from "@actions/github";
+import { loadConfig } from "@config/loader";
+import { EMPTY_SUMMARY, topRepositories } from "@domain/comparison";
+import { computeForecast } from "@domain/forecast";
+import { deltaIndicator } from "@domain/formatting";
+import { measureRun } from "@domain/measurement";
+import { Delivery, notificationIsDue, settleNotification } from "@domain/notification";
+import { buildStargazerMap, diffStargazers, type RepoStargazers, type StargazerMap } from "@domain/stargazers";
+import type { Summary } from "@domain/types";
+import { getRepos } from "@infrastructure/github/filters";
+import { fetchAllStargazers } from "@infrastructure/github/stargazers";
+import { getEmailConfig, sendEmail } from "@infrastructure/notification/email";
+import { withDataBranch } from "@infrastructure/persistence/data-branch";
+import { writeHtmlReport } from "@infrastructure/persistence/storage";
+import { retry } from "@octokit/plugin-retry";
+import { resolveChartHistories } from "@presentation/charts";
+import type { RenderedRun } from "@presentation/run";
+import { renderEmptyRun, renderRun } from "@presentation/run";
+import { errorMessage } from "@shared/errors";
 
 export async function trackStars(): Promise<void> {
-  try {
-    const config = loadConfig();
-    const token = core.getInput('github-token', { required: true });
-    const apiUrl = core.getInput('github-api-url') || process.env.GITHUB_API_URL || '';
-    const octokit = github.getOctokit(token, apiUrl ? { baseUrl: apiUrl } : undefined, retry);
-    const t = getTranslations(config.locale);
+	try {
+		const config = loadConfig();
+		const token = core.getInput("github-token", { required: true });
+		const apiUrl = core.getInput("github-api-url") || process.env.GITHUB_API_URL || "";
+		const octokit = github.getOctokit(token, apiUrl ? { baseUrl: apiUrl } : undefined, retry);
 
-    core.info('Fetching repositories...');
+		core.info("Fetching repositories...");
 
-    const repos = await getRepos({ octokit, config });
+		const repos = await getRepos({ octokit, config });
 
-    if (repos.length === 0) {
-      core.warning('No repositories matched the configured filters');
+		if (repos.length === 0) {
+			core.warning("No repositories matched the configured filters");
 
-      setEmptyOutputs();
-      return;
-    }
+			const empty = renderEmptyRun(config);
 
-    await withDataDir({
-      branch: config.dataBranch,
-      readOnly: config.readOnly,
-      fn: async (dataDir) => {
-        core.info(`Tracking ${repos.length} repositories...`);
+			setOutputs({
+				summary: EMPTY_SUMMARY,
+				rendered: empty,
+				htmlReportPath: writeHtmlReport({ htmlReport: empty.html }),
+				newStargazers: 0,
+			});
+			return;
+		}
 
-        const storedHistory = readHistory(dataDir);
-        const baselineSnapshot = getBaselineSnapshot({
-          history: storedHistory,
-          compareAgainst: config.compareAgainst,
-        });
-        const previousTimestamp = baselineSnapshot ? baselineSnapshot.timestamp : null;
+		await withDataBranch({
+			dataBranch: config.dataBranch,
+			readOnly: config.readOnly,
+			token,
+			run: async (branch) => {
+				core.info(`Tracking ${repos.length} repositories...`);
 
-        core.info(`Comparing star counts (baseline: ${previousTimestamp ?? 'first run'})...`);
+				const storedHistory = branch.readHistory();
+				const measurement = measureRun({
+					trackedSet: repos,
+					storedHistory,
+					comparisonWindow: config.compareAgainst,
+					maxHistory: config.maxHistory,
+					notificationThreshold: config.notificationThreshold,
+					notificationMode: config.notificationMode,
+				});
+				const { results, summary, updatedHistory } = measurement;
+				const previousTimestamp = measurement.baselineTimestamp;
 
-        const results = compareStars({ currentRepos: repos, previousSnapshot: baselineSnapshot });
-        const { summary } = results;
+				core.info(`Comparing star counts (baseline: ${previousTimestamp ?? "first run"})...`);
+				core.info(`Total: ${summary.totalStars} stars (${deltaIndicator(summary.totalDelta)})`);
 
-        core.info(`Total: ${summary.totalStars} stars (${deltaIndicator(summary.totalDelta)})`);
+				if (measurement.droppedSnapshots > 0) {
+					core.warning(
+						`max-history is ${config.maxHistory} but ${storedHistory.snapshots.length} snapshots are stored, so this run drops the oldest ${measurement.droppedSnapshots}. Raise max-history before this run if you want to keep them.`,
+					);
+				}
 
-        let repoStargazers: RepoStargazers[] = [];
-        if (config.includeCharts || config.trackStargazers) {
-          core.info('Fetching stargazers...');
+				let repoStargazers: RepoStargazers[] = [];
+				if (config.includeCharts || config.trackStargazers) {
+					core.info("Fetching stargazers...");
 
-          repoStargazers = await fetchAllStargazers({ octokit, repos, config });
-        }
+					repoStargazers = await fetchAllStargazers({ octokit, repos, config });
+				}
 
-        let stargazerDiff = null;
-        if (config.trackStargazers) {
-          const previousMap = readStargazers(dataDir);
+				let stargazerDiff = null;
+				let stargazerMap: StargazerMap | undefined;
 
-          stargazerDiff = diffStargazers({ current: repoStargazers, previousMap });
+				if (config.trackStargazers) {
+					const previousMap = branch.readStargazers();
 
-          writeStargazers({
-            dataDir,
-            stargazerMap: buildStargazerMap({ repoStargazers, previousMap }),
-          });
+					stargazerDiff = diffStargazers({ current: repoStargazers, previousMap });
+					stargazerMap = buildStargazerMap({ repoStargazers, previousMap });
 
-          core.info(`Found ${stargazerDiff.totalNew} new stargazers`);
-        }
+					core.info(`Found ${stargazerDiff.totalNew} new stargazers`);
+				}
 
-        const snapshot = createSnapshot({ currentRepos: repos, summary });
-        const prunedCount = storedHistory.snapshots.length + 1 - config.maxHistory;
+				const topRepoNames = topRepositories({ repos: results.repos, limit: config.topRepos });
 
-        if (prunedCount > 0) {
-          core.warning(
-            `max-history is ${config.maxHistory} but ${storedHistory.snapshots.length} snapshots are stored, so this run drops the oldest ${prunedCount}. Raise max-history before this run if you want to keep them.`,
-          );
-        }
+				const chartHistories = resolveChartHistories({
+					config,
+					storedHistory: updatedHistory,
+					repos: repos.map(({ fullName, name, owner, stars }) => ({
+						fullName,
+						name,
+						owner,
+						stars,
+					})),
+					repoStargazers,
+				});
+				const forecastData = computeForecast({
+					history: chartHistories.aggregate,
+					topRepoNames,
+					historyForRepo: chartHistories.reconstructedForRepo,
+				});
 
-        const updatedHistory = addSnapshot({
-          history: storedHistory,
-          snapshot,
-          maxHistory: config.maxHistory,
-        });
+				const rendered = renderRun({
+					config,
+					results,
+					previousTimestamp,
+					chartHistories,
+					storedHistory: updatedHistory,
+					stargazerDiff,
+					forecastData,
+				});
+				const notify = notificationIsDue({
+					changed: summary.changed,
+					thresholdReached: measurement.thresholdReached,
+				});
 
-        const sorted = [...results.repos]
-          .filter((repo) => !repo.isRemoved)
-          .sort((repoA, repoB) => repoB.current - repoA.current);
-        const topRepoNames = sorted.slice(0, config.topRepos).map((repo) => repo.fullName);
+				const emailConfig = getEmailConfig(config.locale);
+				let delivery: Delivery = Delivery.NOT_ATTEMPTED;
 
-        const chartNow = new Date();
-        const repoTotals = repos.map((repo) => ({
-          fullName: repo.fullName,
-          name: repo.name,
-          owner: repo.owner,
-          stars: repo.stars,
-        }));
+				if (emailConfig && (notify || config.sendOnNoChanges)) {
+					try {
+						const sent = await sendEmail({
+							emailConfig,
+							subject: rendered.emailSubject,
+							htmlBody: rendered.html,
+						});
 
-        const starHistory = config.includeCharts
-          ? buildStarHistory({
-              repoStargazers,
-              repos: repoTotals,
-              maxPoints: config.chartMaxPoints,
-              now: chartNow,
-            })
-          : { snapshots: [] };
-        const history = resolveChartHistory({
-          candidate: starHistory,
-          fallback: updatedHistory,
-        });
+						delivery = sent ? Delivery.SENT : Delivery.FAILED;
+					} catch (error) {
+						core.warning(`Failed to send email: ${errorMessage(error)}`);
+						delivery = Delivery.FAILED;
+					}
+				} else if (emailConfig) {
+					core.info(
+						summary.changed
+							? "Notification threshold not reached, skipping email"
+							: "No stars changed since the baseline, skipping email",
+					);
+				}
 
-        const forecastData = computeForecast({ history, topRepoNames });
+				const notification = settleNotification({
+					changed: summary.changed,
+					thresholdReached: measurement.thresholdReached,
+					delivery,
+					history: updatedHistory,
+					totalStars: summary.totalStars,
+				});
 
-        const reportParams = {
-          results,
-          previousTimestamp,
-          locale: config.locale,
-          history,
-          velocityHistory: updatedHistory,
-          includeCharts: config.includeCharts,
-          stargazerDiff,
-          forecastData,
-          topRepos: config.topRepos,
-          smoothing: config.chartSmoothing,
-          curve: config.chartCurve,
-          showPoints: config.chartShowPoints,
-          milestones: config.chartMilestones,
-          beginAtZero: config.chartBeginAtZero,
-          theme: config.chartTheme,
-          customMilestones: config.chartCustomMilestones,
-          range: config.chartRange,
-          trendLine: config.chartTrendLine,
-          velocityMetrics: config.velocityMetrics,
-        };
-        const markdownReport = generateMarkdownReport(reportParams);
-        const htmlReport = generateHtmlReport({ ...reportParams, theme: config.emailTheme });
+				const htmlReportPath = writeHtmlReport({ htmlReport: rendered.html });
 
-        const csvReport = generateCsvReport(results);
-        const badge = generateBadge({ totalStars: summary.totalStars, locale: config.locale });
-        const thresholdReached = shouldNotify({
-          totalStars: summary.totalStars,
-          starsAtLastNotification: storedHistory.starsAtLastNotification,
-          threshold: config.notificationThreshold,
-          mode: config.notificationMode,
-        });
-        const notify = summary.changed && thresholdReached;
+				branch.publish({
+					history: notification.historyToPersist,
+					stargazerMap,
+					report: rendered.markdown,
+					badge: rendered.badge,
+					csv: rendered.csv,
+					charts: rendered.charts,
+					commitMessage: `Update star data: ${summary.totalStars} total (${deltaIndicator(summary.totalDelta)})`,
+				});
 
-        const emailConfig = getEmailConfig(config.locale);
-        let notificationDelivered = notify;
-        let mailDelivered = false;
+				setOutputs({
+					summary,
+					rendered,
+					htmlReportPath,
+					shouldNotify: notification.shouldNotify,
+					notificationSent: notification.notificationSent,
+					newStargazers: stargazerDiff?.totalNew ?? 0,
+				});
+			},
+		});
+	} catch (error) {
+		core.setFailed(`Star Tracker failed: ${errorMessage(error)}`);
 
-        if (emailConfig && (notify || config.sendOnNoChanges)) {
-          const subject = interpolate({
-            template: t.email.subjectLine,
-            params: {
-              subject: t.email.subject,
-              totalStars: summary.totalStars,
-              delta: deltaIndicator(summary.totalDelta),
-            },
-          });
-
-          try {
-            const sent = await sendEmail({ emailConfig, subject, htmlBody: htmlReport });
-
-            mailDelivered = sent;
-            notificationDelivered = notify && sent;
-          } catch (error) {
-            core.warning(`Failed to send email: ${(error as Error).message}`);
-            notificationDelivered = false;
-          }
-        } else if (emailConfig) {
-          core.info('Notification threshold not reached, skipping email');
-        }
-
-        if (notificationDelivered) {
-          updatedHistory.starsAtLastNotification = summary.totalStars;
-        }
-
-        writeHistory({ dataDir, history: updatedHistory });
-        writeReport({ dataDir, markdown: markdownReport });
-        writeBadge({ dataDir, svg: badge });
-        writeCsv({ dataDir, csv: csvReport });
-
-        const chartFiles = buildChartFiles({
-          config,
-          history,
-          fallbackHistory: updatedHistory,
-          forecastData,
-          topRepoNames,
-          repoTotals,
-          repoStargazers,
-          now: chartNow,
-        });
-
-        for (const chartFile of chartFiles) {
-          writeChart({ dataDir, filename: chartFile.filename, svg: chartFile.svg });
-        }
-
-        pruneCharts({ dataDir, keep: chartFiles.map((chartFile) => chartFile.filename) });
-
-        if (config.readOnly) {
-          core.info(`Read-only run: leaving ${config.dataBranch} untouched`);
-        } else {
-          const commitMsg = `Update star data: ${summary.totalStars} total (${deltaIndicator(summary.totalDelta)})`;
-          commitAndPush({ dataDir, dataBranch: config.dataBranch, message: commitMsg, token });
-        }
-
-        setOutputs({
-          summary,
-          markdownReport,
-          htmlReport,
-          csvReport,
-          shouldNotify: notify,
-          notificationSent: mailDelivered,
-          newStargazers: stargazerDiff?.totalNew ?? 0,
-        });
-      },
-    });
-  } catch (error) {
-    const err = error as Error;
-    core.setFailed(`Star Tracker failed: ${err.message}`);
-
-    if (err.stack) core.debug(err.stack);
-  }
-}
-
-function setEmptyOutputs(): void {
-  setOutputs({
-    summary: {
-      totalStars: 0,
-      totalPrevious: 0,
-      totalDelta: 0,
-      newStars: 0,
-      lostStars: 0,
-      changed: false,
-    },
-    markdownReport: 'No repositories matched the configured filters.',
-    htmlReport: '<p>No repositories matched the configured filters.</p>',
-    csvReport: '',
-    shouldNotify: false,
-    notificationSent: false,
-    newStargazers: 0,
-  });
+		if (error instanceof Error && error.stack) core.debug(error.stack);
+	}
 }
 
 interface SetOutputsParams {
-  summary: Summary;
-  markdownReport: string;
-  htmlReport: string;
-  csvReport: string;
-  shouldNotify: boolean;
-  notificationSent: boolean;
-  newStargazers: number;
+	summary: Summary;
+	rendered: RenderedRun;
+	htmlReportPath: string;
+	shouldNotify?: boolean;
+	notificationSent?: boolean;
+	newStargazers: number;
 }
 
 function setOutputs({
-  summary,
-  markdownReport,
-  htmlReport,
-  csvReport,
-  shouldNotify,
-  notificationSent,
-  newStargazers,
+	summary,
+	rendered,
+	htmlReportPath,
+	shouldNotify = false,
+	notificationSent = false,
+	newStargazers,
 }: SetOutputsParams): void {
-  core.setOutput('report', markdownReport);
-  core.setOutput('report-html', htmlReport);
-  core.setOutput('report-html-path', writeHtmlReport({ htmlReport }));
-  core.setOutput('report-csv', csvReport);
-  core.setOutput('total-stars', String(summary.totalStars));
-  core.setOutput('stars-changed', String(summary.changed));
-  core.setOutput('new-stars', String(summary.newStars));
-  core.setOutput('lost-stars', String(summary.lostStars));
-  core.setOutput('should-notify', String(shouldNotify));
-  core.setOutput('notification-sent', String(notificationSent));
-  core.setOutput('new-stargazers', String(newStargazers));
+	core.setOutput("report", rendered.markdown);
+	core.setOutput("report-html", rendered.html);
+	core.setOutput("report-html-path", htmlReportPath);
+	core.setOutput("report-csv", rendered.csv);
+	core.setOutput("total-stars", String(summary.totalStars));
+	core.setOutput("stars-changed", String(summary.changed));
+	core.setOutput("new-stars", String(summary.newStars));
+	core.setOutput("lost-stars", String(summary.lostStars));
+	core.setOutput("should-notify", String(shouldNotify));
+	core.setOutput("notification-sent", String(notificationSent));
+	core.setOutput("new-stargazers", String(newStargazers));
 }

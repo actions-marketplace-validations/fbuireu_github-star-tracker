@@ -8,16 +8,8 @@ All data is automatically saved to a dedicated branch (default: `star-tracker-da
 
 ### Contents
 
-| File | Description |
-|---|---|
-| `README.md` | Full Markdown report with embedded SVG charts |
-| `stars-data.json` | Complete historical data (JSON) |
-| `stars-badge.svg` | Star count badge |
-| `charts/star-history.svg` | Animated total stars chart |
-| `charts/comparison.svg` | Top repos comparison chart |
-| `charts/forecast.svg` | Growth forecast chart |
-| `charts/{owner}-{repo}.svg` | Per-repo charts |
-| `stargazers.json` | Stargazer login map (if `track-stargazers` enabled) |
+Every file the branch holds, and the condition under which each one appears, is tabulated in
+**[Data Management](Data-Management#generated-files)**.
 
 ### Viewing
 
@@ -27,7 +19,12 @@ Navigate to:
 https://github.com/YOUR_USER/YOUR_REPO/tree/star-tracker-data
 ```
 
-GitHub automatically renders `README.md` with all charts visible.
+GitHub automatically renders [`README.md`](https://github.com/fbuireu/github-star-tracker/blob/main/README.md) with all charts visible.
+
+> [!NOTE]
+> That `README.md` is the report, rewritten in full on every run. Editing it by hand is safe but pointless:
+> the next run overwrites the file wholesale rather than merging into it. Anything you want to keep belongs
+> on another branch, or in a file the action does not write.
 
 ---
 
@@ -64,6 +61,9 @@ Display your star count in your main README.
 
 <!-- Per-repo chart (replace owner-repo with your repo) -->
 ![Per-Repo](https://raw.githubusercontent.com/YOUR_USER/YOUR_REPO/star-tracker-data/charts/owner-repo.svg)
+
+<!-- Per-repo forecast chart -->
+![Per-Repo Forecast](https://raw.githubusercontent.com/YOUR_USER/YOUR_REPO/star-tracker-data/charts/forecast-owner-repo.svg)
 ```
 
 ---
@@ -76,17 +76,17 @@ Access data in subsequent workflow steps for custom integrations.
 
 | Output | Description |
 |---|---|
-| `report` | Full Markdown report |
-| `report-html` | HTML report (for email) |
-| `report-html-path` | File path to the HTML report (for large reports / custom mailers) |
-| `total-stars` | Total star count |
-| `stars-changed` | Whether stars changed against the comparison baseline (`true`/`false`) |
-| `new-stars` | Stars gained against the comparison baseline (per run, not cumulative) |
 | `lost-stars` | Stars lost against the comparison baseline (per run, not cumulative) |
-| `should-notify` | Whether the notification threshold was reached (cumulative across runs) |
 | `new-stargazers` | New stargazers detected against the stored stargazer list, which every writing run rewrites - not affected by `compare-against` |
-| `report-csv` | CSV report of the run |
+| `new-stars` | Stars gained against the comparison baseline (per run, not cumulative) |
 | `notification-sent` | Whether an email was actually delivered (false when SMTP is unconfigured, `email-to` is empty, or the send failed). A `send-on-no-changes` email sets it `true` even though `should-notify` is `false` |
+| `report` | Full Markdown report |
+| `report-csv` | CSV report of the run |
+| `report-html` | HTML report (for email) |
+| `report-html-path` | File path to the HTML report (for large reports / custom mailers). Written on **every** run, including read-only ones and runs where no repository matched, and written outside the data branch so it never reaches a commit |
+| `should-notify` | Whether the notification threshold was reached (cumulative across runs) |
+| `stars-changed` | Whether stars changed against the comparison baseline (`true`/`false`) |
+| `total-stars` | Total star count |
 
 > [!NOTE]
 > The comparison baseline is the previous run by default, and [`compare-against`](Configuration#compare-against) can move it to 24h, 7d or 30d ago. `new-stars` and `lost-stars` describe a single run and carry no memory of whether a notification was sent - gate recurring emails on `should-notify`, which accumulates until it fires. See **[Email Notifications](Email-Notifications)**.

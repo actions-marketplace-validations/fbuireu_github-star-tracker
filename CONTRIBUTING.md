@@ -1,47 +1,48 @@
 # Contributing to GitHub Star Tracker
 
-First off, thank you for considering contributing to GitHub Star Tracker! It's people like you that make this action a great tool for the community.
+This action is a TypeScript codebase bundled into a committed [`dist/index.js`](./dist/index.js). Two things catch out most
+first pull requests: the bundle is expected to be rebuilt in the same commit as the source, which no check
+enforces, and the documentation set is verified by a test, which does. Both are covered below.
 
 ## Code of Conduct
 
-This project and everyone participating in it is governed by our commitment to providing a welcoming and inclusive environment. By participating, you are expected to uphold this code:
-
-- **Be respectful**: Different viewpoints and experiences are valuable
-- **Be constructive**: Focus on what is best for the community
-- **Be collaborative**: Work together towards common goals
-- **Be patient**: Remember that we all have different levels of experience
+This project and everyone participating in it is governed by our
+[Code of Conduct](./CODE_OF_CONDUCT.md). By participating, you are expected to uphold it.
 
 ## How Can I Contribute?
 
 ### Reporting Bugs
 
-Before creating bug reports, please check existing issues to avoid duplicates. When creating a bug report, include as many details as possible:
+Before creating bug reports, please check existing issues to avoid duplicates. When creating a bug report,
+include as many details as possible:
 
-- **Use the bug report template**: It's there to help you provide all necessary information
-- **Describe the issue**: A clear and concise description
-- **Steps to reproduce**: How can we see the bug ourselves?
-- **Expected behavior**: What should happen?
-- **Actual behavior**: What actually happens?
+- **Use the bug report template**: it is there to help you provide all necessary information
+- **Describe the issue**: a clear and concise description
+- **Steps to reproduce**: how can we see the bug ourselves?
+- **Expected behavior**: what should happen?
+- **Actual behavior**: what actually happens?
 - **Environment**: OS, Node version, action version
 - **Logs**: GitHub Actions workflow logs if applicable
 
 ### Suggesting Features
 
-Feature requests are welcome! To suggest a feature:
+Feature requests are welcome. To suggest a feature:
 
-- **Use the feature request template**: Helps structure your proposal
-- **Describe the feature**: What should it do?
-- **Use cases**: Why is this feature valuable?
-- **Alternatives**: Have you considered other approaches?
-- **Implementation ideas**: Do you have thoughts on how to build it?
+- **Use the feature request template**: helps structure your proposal
+- **Describe the feature**: what should it do?
+- **Use cases**: why is this feature valuable?
+- **Alternatives**: have you considered other approaches?
+- **Implementation ideas**: do you have thoughts on how to build it?
 
 ### Improving Documentation
 
 Found a typo? Something unclear? Documentation improvements are always welcome:
 
 - README updates
-- Wiki improvements
-- Per-folder `CLAUDE.md` notes (the source itself stays comment-free)
+- Wiki pages: edit the `docs/wiki/*.md` files **in this repository**. The GitHub Wiki is generated from
+  that folder by [`.github/workflows/sync-wiki.yml`](./.github/workflows/sync-wiki.yml), which runs `rsync -a --delete` on every push touching
+  `docs/wiki/**`, so an edit made in the wiki UI is overwritten on the next docs commit
+- Per-folder `CLAUDE.md` notes
 - Examples and tutorials
 
 ## Development Process
@@ -57,9 +58,20 @@ Found a typo? Something unclear? Documentation improvements are always welcome:
 
 2. **Install dependencies**
    ```bash
-   # Requires Node.js 24+ and pnpm
+   # .nvmrc holds the Node version; package.json pins pnpm in packageManager
+   nvm use
    pnpm install
    ```
+
+   The Node version lives in three places that must agree: [`.nvmrc`](./.nvmrc), which both CI workflows
+   read through `node-version-file`; `engines.node` in [`package.json`](./package.json); and the *Versions* section of the
+   root [`CLAUDE.md`](./CLAUDE.md), where [`docs/docs-consistency.test.ts`](./docs/docs-consistency.test.ts) asserts it against
+   `package.json`. Bumping Node means editing all three in one commit. The pnpm version lives in
+   `packageManager` and in that same `CLAUDE.md` section.
+
+   Note that `engines.node` is the *development* pin. The shipped runtime is `node24`, set by
+   `runs.using` in [`action.yml`](./action.yml) and by the esbuild `target`, so a `node:*` API newer than Node 24 will
+   type-check and bundle here and then fail on a runner.
 
 3. **Create a branch**
    ```bash
@@ -71,35 +83,55 @@ Found a typo? Something unclear? Documentation improvements are always welcome:
 ### Development Workflow
 
 1. **Make your changes**
-   ```bash
-   # Edit files using your favorite editor
-   ```
 
 2. **Run tests**
    ```bash
    # Run all checks
-   pnpm run validate
-   
+   pnpm run verify
+
    # Or individually:
-   pnpm run test          # Unit tests
-   pnpm run test:coverage # Tests with coverage report
+   pnpm run lint          # Biome, check only
+   pnpm run test:ut       # Unit tests
+   pnpm run test:ut:coverage # Tests with coverage report
    pnpm run typecheck     # Type checking
-   pnpm run check         # Linting + type checking
+   pnpm run verify        # Format check + typecheck + coverage + build (what CI runs)
    ```
 
-3. **Test your changes locally**
+3. **Rebuild the bundle**
    ```bash
-   # Build the action
    pnpm run build
-   
-   # Test in a real workflow (create .github/workflows/test.yml)
    ```
 
-4. **Commit your changes**
+   `action.yml` runs `dist/index.js` directly, with no install step, so the bundle is committed
+   ([ADR 0003](./docs/adr/0003-commit-the-bundled-dist-directory.md)). Commit the regenerated
+   `dist/index.js` and `dist/index.js.map` alongside your source changes.
+
+   Nothing fails your pull request if you forget, and a release will not ship the stale bundle either;
+   the `release` job in [`ci.yml`](./.github/workflows/ci.yml) rebuilds it before publishing. What you are keeping honest is `main` itself: a commit type
+   that does not cut a release (`refactor`, `chore`, `test`, `docs`, `ci`) leaves `main`'s `dist/` behind its
+   sources until the next `feat` or `fix`, which anyone referencing `@main` would run. The `pre-push` hook
+   rebuilds the bundle for you, so in practice this is a matter of committing what it leaves behind.
+
+4. **Test your changes in a real workflow** (see [Development Tips](#development-tips) below)
+
+5. **Commit your changes**
    ```bash
    git add .
    git commit -m "feat: add support for custom data branch names"
    ```
+
+### Git Hooks
+
+Husky installs three hooks on `pnpm install`, so some of the checks above run whether you ask for them or
+not:
+
+| Hook | Runs | What it means for you |
+| --- | --- | --- |
+| `.husky/pre-commit` | `pnpm lint-staged` | Staged files are linted and formatted before the commit lands |
+| `.husky/commit-msg` | `pnpm exec commitlint --edit` | A commit message that breaks the conventions below is rejected here, not in review |
+| `.husky/pre-push` | `pnpm verify` | A push runs a type-check, the tests affected since `origin/main`, and a full rebuild, so expect it to take a while |
+
+Because `pre-push` rebuilds, a push can leave `dist/` dirty. Commit that result rather than discarding it.
 
 ### Code Style
 
@@ -107,27 +139,34 @@ We use **Biome** for linting and formatting:
 
 ```bash
 # Check code style
-pnpm run check
+pnpm run lint
 
 # Auto-fix issues
 pnpm run format
 ```
 
+`pnpm run verify` is the wider gate: it adds type-checking, the coverage run and the bundle on top of `lint`.
+
 **Guidelines:**
-- TypeScript with strict mode
+- TypeScript: strict type-checking is on by default in the pinned version, so [`tsconfig.json`](./tsconfig.json) does not
+  declare it
 - Functional programming style preferred
 - No `any` types (use `unknown` if needed)
-- Functions with 2+ parameters should use destructured named parameters
-- Constants for magic numbers/strings
-- Comprehensive JSDoc for public APIs
+- One argument is positional and two or more are a single object typed `<FunctionName>Params`:
+  `makeRepoInfo({ name, stars }: MakeRepoInfoParams)`. The exception is a function a runtime calls back,
+  such as the `sort` comparator `alphabetically`. `docs/docs-consistency.test.ts` asserts this over the
+  whole of `src`, fixtures included
+- Constants for magic numbers and strings
+- No explanatory comments. The tree carries none by design; the `CLAUDE.md` guides carry the explanation
+  instead
 
 ### Testing
 
-All features should include tests:
+All features should include tests, colocated next to the file they cover:
 
 ```typescript
-// src/feature.test.ts
-import { describe, it, expect } from 'vitest';
+// src/domain/feature.test.ts
+import { describe, expect, it } from 'vitest';
 import { myFeature } from './feature';
 
 describe('myFeature', () => {
@@ -138,24 +177,31 @@ describe('myFeature', () => {
 });
 ```
 
+Biome sorts named imports alphabetically, so `{ describe, expect, it }` is the only order that passes
+`pnpm run lint`.
+
 **Test requirements:**
-- ✅ Unit tests for all functions
-- ✅ Integration tests for complex flows
-- ✅ Minimum 80% code coverage
-- ✅ Tests must pass before merging
+- Unit tests for all functions
+- Integration tests for complex flows
+- Minimum 85% code coverage, on lines, functions, branches and statements alike
+- Tests must pass before merging
 
 Run tests:
 ```bash
-pnpm run test              # Run once
-pnpm run test:watch        # Watch mode
-pnpm run test:coverage     # With coverage report
+pnpm run test:ut                            # Run once
+pnpm run test:ut:watch                      # Watch mode
+pnpm run test:ut:coverage                   # With coverage report
+pnpm vitest run src/domain                  # One layer
+pnpm vitest run src/domain/forecast.test.ts # One file
 ```
 
 ---
 
 ## Commit Message Guidelines
 
-This project uses [semantic-release](https://semantic-release.gitbook.io/) for automated versioning and releases. **Following these commit conventions is mandatory.**
+This project uses [semantic-release](https://semantic-release.gitbook.io/) for automated versioning and
+releases, and `.husky/commit-msg` runs commitlint on every commit, so these conventions are enforced
+locally before a message can land.
 
 ### Commit Format
 
@@ -171,8 +217,8 @@ This project uses [semantic-release](https://semantic-release.gitbook.io/) for a
 
 | Type | Description | Version Bump | Example |
 |------|-------------|--------------|---------|
-| `feat` | New feature | Minor (1.0.0 → 1.1.0) | `feat: add email notification support` |
-| `fix` | Bug fix | Patch (1.0.0 → 1.0.1) | `fix: resolve chart rendering in emails` |
+| `feat` | New feature | Minor (1.0.0 to 1.1.0) | `feat: add email notification support` |
+| `fix` | Bug fix | Patch (1.0.0 to 1.0.1) | `fix: resolve chart rendering in emails` |
 | `docs` | Documentation only | None | `docs: update installation guide` |
 | `style` | Code style/formatting | None | `style: fix indentation` |
 | `refactor` | Code restructuring | None | `refactor: simplify chart generation` |
@@ -181,11 +227,14 @@ This project uses [semantic-release](https://semantic-release.gitbook.io/) for a
 | `chore` | Maintenance tasks | None | `chore: update dependencies` |
 | `ci` | CI/CD changes | None | `ci: add release workflow` |
 | `build` | Build system changes | None | `build: update esbuild config` |
-| `revert` | Revert previous commit | Depends | `revert: feat: add feature X` |
+| `revert` | Revert previous commit | Patch | `revert: feat: add feature X` |
+
+A scope in parentheses is optional and unconstrained: [`commitlint.config.ts`](./commitlint.config.ts) extends
+`@commitlint/config-conventional` and declares no `scope-enum`.
 
 ### Breaking Changes
 
-For breaking changes, use `!` or `BREAKING CHANGE:` footer:
+For breaking changes, use `!` or a `BREAKING CHANGE:` footer:
 
 ```bash
 # Option 1: ! after type
@@ -198,7 +247,7 @@ BREAKING CHANGE: Config file now uses YAML instead of JSON.
 Users must migrate their configuration files."
 ```
 
-**Result:** Major version bump (1.0.0 → 2.0.0)
+**Result:** major version bump (1.0.0 to 2.0.0)
 
 ### Commit Examples
 
@@ -214,58 +263,29 @@ chore(deps): update @actions/core to v1.11.1
 
 **Bad commits:**
 ```bash
-update stuff                    # ❌ Not descriptive
-Fix bug                         # ❌ Doesn't follow format
-added new feature               # ❌ Wrong tense (use imperative)
-feat add charts                 # ❌ Missing colon
-WIP                             # ❌ Not descriptive at all
-```
-
-### Commit Scope (Optional)
-
-Scope provides additional context:
-
-```bash
-feat(charts): add new chart type
-fix(email): resolve rendering issue
-docs(wiki): add PAT setup guide
-test(tracking): add edge case tests
-```
-
-**Common scopes:**
-- `charts`: Chart generation
-- `email`: Email notifications
-- `tracking`: Star tracking logic
-- `config`: Configuration handling
-- `i18n`: Internationalization
-- `data`: Data management
-
-### Multi-line Commits
-
-For complex changes:
-
-```bash
-git commit -m "feat(charts): add interactive charts with drill-down
-
-- Added click handlers for chart elements
-- Implemented tooltip with repository details
-- Added chart legend customization
-- Updated documentation with examples
-
-Closes #123"
+update stuff                    # Not descriptive
+Fix bug                         # Does not follow the format
+added new feature               # Wrong tense (use imperative)
+feat add charts                 # Missing colon
+WIP                             # Not descriptive at all
 ```
 
 ### Automated Releases
 
-When you merge to `main`:
-1. semantic-release analyzes commits since last release
-2. Determines version bump based on commit types
-3. Updates `package.json` automatically
-4. Generates `CHANGELOG.md` from commits
-5. Creates git tag and GitHub release
-6. Updates `v1` major version tag
+The `release` job in `.github/workflows/ci.yml` runs on every push to `main`, after the `Check` job has
+passed `pnpm verify` on the same commit, so a release only happens if lint, type-check, coverage and the
+build all pass. It rebuilds the bundle, and semantic-release then:
 
-**No manual versioning needed!**
+1. Analyzes the commits since the last release
+2. Determines the version bump from the commit types
+3. Updates `package.json`
+4. Generates [`CHANGELOG.md`](./CHANGELOG.md) from the commits
+5. Creates the git tag and the GitHub release
+6. Commits `package.json`, [`pnpm-lock.yaml`](./pnpm-lock.yaml), `CHANGELOG.md` and `dist/` back to `main` as
+   `chore(release): <version> [skip ci]`
+
+A final workflow step force-updates the floating `v1` tag to the new release, which is the tag consumers
+reference. No manual versioning is needed.
 
 ---
 
@@ -273,12 +293,14 @@ When you merge to `main`:
 
 ### Before Submitting
 
-1. ✅ **All tests pass**: `pnpm run validate` succeeds
-2. ✅ **Code is formatted**: Run `pnpm run format`
-3. ✅ **Types are correct**: No TypeScript errors
-4. ✅ **Documentation updated**: If adding features
-5. ✅ **Commits follow conventions**: See above
-6. ✅ **Branch is up to date**: Rebase on `main` if needed
+- [ ] **All checks pass**: `pnpm run verify` succeeds
+- [ ] **`dist/` is rebuilt and committed** if you touched any bundled file under `src/` (that is,
+      anything except `*.test.ts` and the fixtures in [`src/shared/tests/`](./src/shared/tests), neither of which the bundle reaches)
+- [ ] **Code is formatted**: run `pnpm run format`
+- [ ] **Types are correct**: no TypeScript errors
+- [ ] **Documentation updated**: see the maintenance contract in the root [`CLAUDE.md`](./CLAUDE.md)
+- [ ] **Commits follow conventions**: see above
+- [ ] **Branch is up to date**: rebase on `main` if needed
 
 ### Creating a Pull Request
 
@@ -291,6 +313,8 @@ When you merge to `main`:
    - Click "Compare & pull request"
    - Fill in the PR template
    - Link related issues
+   - Add a GIF. The template's GIF section is mandatory, and it is the one requirement here that is
+     enforced by nothing but good faith
 
 3. **PR Title Format**
    Follow commit conventions:
@@ -304,20 +328,20 @@ When you merge to `main`:
    - What does this PR do?
    - Why is this change needed?
    - How has it been tested?
-   - Screenshots/examples if applicable
+   - Screenshots or example output if applicable
 
 ### Review Process
 
 - **Maintainers will review** your PR
-- **Address feedback**: Make requested changes
-- **Keep discussions respectful**: We're all learning
-- **Be patient**: Reviews may take a few days
+- **Address feedback**: make the requested changes
+- **Keep discussions respectful**: we are all learning
+- **Be patient**: reviews may take a few days
 
 ### After Approval
 
-- PR will be **merged to main**
-- **Automated release** will trigger if applicable
-- Your contribution will be in the next version!
+- The PR is merged to `main`
+- An automated release triggers if the commit types call for one
+- Your contribution ships in the next version
 
 ---
 
@@ -327,40 +351,76 @@ When you merge to `main`:
 github-star-tracker/
 ├── .github/                # CI/CD workflows and issue templates
 ├── src/
-│   ├── index.ts            # Entry point: Action initialization
-│   ├── application/        # Orchestration layer: Main logic flow
-│   ├── config/             # Configuration: Input parsing, validation, and defaults
-│   ├── domain/             # Core Business Logic: Snapshotting, deltas, and forecasting
-│   ├── infrastructure/     # External Services: GitHub API, Git CLI, Persistence, and SMTP
-│   ├── presentation/       # Output Generation: Markdown, HTML, SVG charts, and badges
-│   └── i18n/               # Internationalization: Locales and translation loaders
+│   ├── application/        # Orchestration layer: the single trackStars() run
+│   ├── assets/             # Not a layer: the brand mark the README embeds
+│   ├── config/             # Configuration: input parsing, YAML, validation, defaults
+│   ├── domain/             # Pure business logic (see below)
+│   ├── i18n/               # Internationalization: locale bundles and translation loaders
+│   ├── index.ts            # Entry point: calls trackStars() at module load
+│   ├── infrastructure/     # External services: GitHub API, Git CLI, persistence, SMTP
+│   ├── presentation/       # Output generation: Markdown, HTML, SVG charts, CSV, badges
+│   └── shared/             # Cross-cutting code owning no layer; today only test fixtures
+├── dist/                   # Committed bundle, what action.yml actually runs (ADR 0003)
 ├── action.yml              # GitHub Action metadata
 ├── package.json            # Dependencies and scripts
 └── tsconfig.json           # TypeScript configuration with path aliases
 ```
 
+[`src/domain/`](./src/domain) is the largest layer and holds one module per concept: run measurement, comparison,
+snapshots, forecasting, velocity, growth, stargazer diffing, star-history reconstruction, tracked-set
+resolution, sampling, notification settlement, formatting and time parsing, plus `types.ts` and
+[`constants.ts`](./src/domain/constants.ts). [`src/domain/CLAUDE.md`](./src/domain/CLAUDE.md) is the guide.
+
 > [!TIP]
-> **Path aliases:** Cross-layer imports use `@application/*`, `@config/*`, `@domain/*`, `@i18n`, `@infrastructure/*`, `@presentation/*`, `@shared/*`. Same-layer imports use relative paths. Tests are co-located as `*.test.ts` files next to the source.
+> **Path aliases:** cross-layer imports use `@application/*`, `@assets/*`, `@config/*`, `@domain/*`,
+> `@i18n`, `@infrastructure/*`, `@presentation/*` and `@shared/*`. Same-layer imports use relative paths.
+> The aliases are declared once, in `tsconfig.json`, and the build and test configs derive theirs from it.
+> `@i18n` is a file alias rather than a glob, so `@i18n/types` does not resolve. Tests are colocated as
+> `*.test.ts` files next to the source.
 
 ### Documentation that ships with the code
 
-Four artefacts, four jobs. They are maintained by hand, so a code change that does not update them leaves
-them lying:
+Four kinds of document, one job each. `CLAUDE.md` appears twice below because it is the same artefact at
+two scales, repo-wide and per layer. They are maintained by hand, so a code change that does not update
+them leaves them lying:
 
 | Document | Answers | Update it when |
 | --- | --- | --- |
 | `CLAUDE.md` (root) | *How do I work in this repo?* Commands, aliases, conventions, the maintenance contract | You change a script, an alias, a convention, or a repo-wide invariant |
-| `CONTEXT.md` (root) | *What does this word mean?* A domain glossary, and nothing else — no file names, no libraries, no implementation detail | A domain term changes meaning, or a new one appears |
+| [`CONTEXT.md`](./CONTEXT.md) (root) | *What does this word mean?* A domain glossary, and nothing else: no file names, no libraries, no implementation detail | A domain term changes meaning, or a new one appears |
 | `src/<layer>/CLAUDE.md` | *What does this layer guarantee?* Invariants and gotchas, one guide per layer | You change an invariant, or a rule the guide states |
-| `ARCHITECTURE.md` | *How does it fit together?* Layer map, end-to-end run, data branch, build and release | You change the run order, the layering, or the pipeline |
-| `docs/adr/` | *Why is it like this?* One decision per file | You make a decision that is hard to reverse, surprising without context, **and** the result of a real trade-off |
+| [`ARCHITECTURE.md`](./ARCHITECTURE.md) | *How does it fit together?* Layer map, end-to-end run, data branch, build and release | You change the run order, the layering, or the pipeline |
+| [`docs/adr/`](./docs/adr) | *Why is it like this?* One decision per file | You make a decision that is hard to reverse, surprising without context, **and** the result of a real trade-off |
 
-The source carries **no explanatory comments** by design — the `CLAUDE.md` files hold that explanation
-instead. That is why letting them drift costs more here than in a commented codebase.
+The root [`CLAUDE.md`](./CLAUDE.md) has the full table of what to update for a given change.
 
-The root [`CLAUDE.md`](./CLAUDE.md) has the full table of what to update for a given change, and
-`docs/docs-consistency.test.ts` fails the build when the mechanical half of it is broken.
+### The documentation test
 
+`docs/docs-consistency.test.ts` runs with `pnpm run test`, so it gates every pull request. It reads the
+whole documentation set and fails on, among other things:
+
+- A markdown link pointing at a file that does not exist
+- A cited source or test file that is not in the tree
+- A `file.ts:123` citation anywhere; name the symbol instead, because line numbers rot silently
+- An `action.yml` input or output missing from a surface that lists them, or listed out of alphabetical
+  order
+- An overridable input whose documented default is not the one [`src/config/defaults.ts`](./src/config/defaults.ts) declares, or whose
+  documentation does not say the config file can override it
+- A `pnpm` script named in the root `CLAUDE.md` that `package.json` does not declare
+- An ADR that breaks the template shape, is numbered out of sequence, is missing from the
+  `ARCHITECTURE.md` index, or has no contextual link from any document other than that index
+- A translation-key table in `docs/wiki/Internationalization-(i18n).md` that does not match
+  [`src/i18n/en.json`](./src/i18n/en.json) section for section and key for key
+- A documented `stars-data.json` example whose `version` is not the one the writer stamps
+- A function or arrow taking two or more positional parameters
+- A sample chart in [`docs/examples/README.md`](./docs/examples/README.md) with no corresponding SVG
+
+"The whole documentation set" is meant literally: the root guides, everything under `docs/` and `.github/`,
+every layer `CLAUDE.md`, `docs/examples/README.md`, and this file along with [`SECURITY.md`](./SECURITY.md) and
+`CODE_OF_CONDUCT.md`. If you edit any of them, the test reads what you wrote.
+
+A failure means the docs and the code disagree, so fix whichever is wrong. The test cannot check prose or
+rationale; that part is still on you.
 
 ## Development Tips
 
@@ -377,49 +437,27 @@ jobs:
   test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: ./  # Uses local action code
         with:
           github-token: ${{ secrets.STAR_TRACKER_TOKEN }}
 ```
 
+The action runs the committed `dist/index.js`, not your sources, so run `pnpm run build` before you
+dispatch the workflow.
+
 ### Debugging
 
-```typescript
-// Use console.log for debugging (captured in workflow logs)
-console.log('Debug info:', { variable, state });
+Use `@actions/core` rather than `console`. Its helpers annotate the workflow log, and `core.debug` output
+only appears when the `ACTIONS_STEP_DEBUG` secret is set, which keeps normal runs readable:
 
-// Use @actions/core for action logs
+```typescript
 import * as core from '@actions/core';
+
 core.debug('Detailed debug info');
 core.info('General information');
 core.warning('Warning message');
 core.error('Error message');
-```
-
-### Common Issues
-
-**Tests failing?**
-```bash
-# Clear cache and retry
-rm -rf node_modules
-pnpm install
-pnpm run validate
-```
-
-**TypeScript errors?**
-```bash
-# Check types
-pnpm run typecheck
-
-# Ensure dependencies are current
-pnpm install
-```
-
-**Formatting issues?**
-```bash
-# Auto-fix all formatting
-pnpm run format
 ```
 
 ---
@@ -428,38 +466,26 @@ pnpm run format
 
 If you use AI tools when contributing:
 
-- **Review all generated code**: You are responsible for the code you submit
-- **Test thoroughly**: AI-generated code must pass all existing tests and include new tests where appropriate
-- **Disclose significant AI usage**: If an entire feature or module was AI-generated, mention it in the PR description
-- **Don't blindly copy**: Understand what the code does before submitting
+- **Review all generated code**: you are responsible for the code you submit
+- **Test thoroughly**: AI-generated code must pass all existing tests and include new tests where
+  appropriate
+- **Disclose significant AI usage**: if an entire feature or module was AI-generated, mention it in the PR
+  description
+- **Do not blindly copy**: understand what the code does before submitting
 
 AI is a tool, not a substitute for understanding the codebase.
 
 ---
 
-## Recognition
-
-Contributors will be recognized in:
-- Release notes (via semantic-release)
-- GitHub contributors page
-- Project README (for significant contributions)
-
 ## Questions?
 
-- 💬 **Discussions**: [GitHub Discussions](https://github.com/fbuireu/github-star-tracker/discussions)
-- 📖 **Documentation**: [Wiki](https://github.com/fbuireu/github-star-tracker/wiki)
-- 🐛 **Issues**: [GitHub Issues](https://github.com/fbuireu/github-star-tracker/issues)
-
-## Resources
-
-- [Semantic Versioning](https://semver.org/)
-- [Conventional Commits](https://www.conventionalcommits.org/)
-- [GitHub Actions Documentation](https://docs.github.com/en/actions)
-- [TypeScript Documentation](https://www.typescriptlang.org/docs/)
+- **Discussions**: [GitHub Discussions](https://github.com/fbuireu/github-star-tracker/discussions)
+- **Documentation**: [Wiki](https://github.com/fbuireu/github-star-tracker/wiki)
+- **Issues**: [GitHub Issues](https://github.com/fbuireu/github-star-tracker/issues)
 
 ---
 <div align="center">
 
-Thank you for contributing! 🎉
+Thank you for contributing!
 
 </div>

@@ -1,470 +1,297 @@
-import * as core from '@actions/core';
-import type { Config } from '@config/types';
-import { Visibility } from '@config/types';
-import { makeConfig } from '@shared/tests';
-import { describe, expect, it, vi } from 'vitest';
-import { fetchRepos } from './client';
-import { filterRepos, getRepos, mapRepos } from './filters';
-import type { GitHubRepo, Octokit } from './types';
+import * as core from "@actions/core";
+import type { Config } from "@config/types";
+import { Visibility } from "@config/types";
+import { makeConfig } from "@shared/tests";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { fetchRepos } from "./client";
+import { getRepos, mapRepos } from "./filters";
+import type { GitHubRepo, Octokit } from "./types";
 
-vi.mock('@actions/core', () => ({
-  info: vi.fn(),
-  warning: vi.fn(),
+vi.mock("@actions/core", () => ({
+	info: vi.fn(),
+	warning: vi.fn(),
 }));
 
 interface MockOctokit {
-  rest: {
-    repos: {
-      listForAuthenticatedUser: ReturnType<typeof vi.fn>;
-    };
-  };
+	rest: {
+		repos: {
+			listForAuthenticatedUser: ReturnType<typeof vi.fn>;
+		};
+	};
 }
 
 function createMockOctokit(mock: MockOctokit): Octokit {
-  return mock as unknown as Octokit;
+	return mock as unknown as Octokit;
 }
 
 function makeRepo(overrides: Partial<GitHubRepo> = {}): GitHubRepo {
-  return {
-    name: 'test-repo',
-    full_name: 'user/test-repo',
-    owner: { login: 'user' },
-    private: false,
-    archived: false,
-    fork: false,
-    stargazers_count: 10,
-    ...overrides,
-  };
+	return {
+		name: "test-repo",
+		full_name: "user/test-repo",
+		owner: { login: "user" },
+		private: false,
+		archived: false,
+		fork: false,
+		stargazers_count: 10,
+		...overrides,
+	};
 }
 
 const defaultConfig: Config = makeConfig({ includeCharts: false, notificationThreshold: 0 });
 
-describe('filterRepos', () => {
-  it('matches only-repos by regex, like its sibling filters', () => {
-    const repos = [makeRepo({ name: 'app-web' }), makeRepo({ name: 'docs' })];
-    const config = makeConfig({ onlyRepos: ['/^app-/'] });
+describe("mapRepos", () => {
+	it("maps raw GitHub API repos to clean objects", () => {
+		const repos = [makeRepo({ name: "my-repo", stargazers_count: 42 })];
+		const mapped = mapRepos(repos);
 
-    expect(filterRepos({ repos, config }).map((repo) => repo.name)).toEqual(['app-web']);
-  });
-
-  it('warns and skips a malformed regex pattern instead of failing the run', () => {
-    const repos = [makeRepo({ name: 'keep-me' }), makeRepo({ name: 'drop-me' })];
-    const config = makeConfig({ excludeRepos: ['/[unclosed/', 'drop-me'] });
-
-    const filtered = filterRepos({ repos, config });
-
-    expect(filtered.map((repo) => repo.name)).toEqual(['keep-me']);
-    expect(core.warning).toHaveBeenCalledWith(expect.stringContaining('Ignoring invalid pattern'));
-  });
-
-  it('returns all repos with default config', () => {
-    const repos = [makeRepo(), makeRepo({ name: 'other' })];
-
-    expect(filterRepos({ repos, config: defaultConfig })).toHaveLength(2);
-  });
-
-  it('filters out archived repos by default', () => {
-    const repos = [makeRepo(), makeRepo({ name: 'archived', archived: true })];
-    const result = filterRepos({ repos, config: defaultConfig });
-
-    expect(result).toHaveLength(1);
-    expect(result[0].name).toBe('test-repo');
-  });
-
-  it('includes archived repos when configured', () => {
-    const repos = [makeRepo(), makeRepo({ name: 'archived', archived: true })];
-    const config = { ...defaultConfig, includeArchived: true };
-
-    expect(filterRepos({ repos, config })).toHaveLength(2);
-  });
-
-  it('filters out forks by default', () => {
-    const repos = [makeRepo(), makeRepo({ name: 'forked', fork: true })];
-
-    expect(filterRepos({ repos, config: defaultConfig })).toHaveLength(1);
-  });
-
-  it('includes forks when configured', () => {
-    const repos = [makeRepo(), makeRepo({ name: 'forked', fork: true })];
-    const config = { ...defaultConfig, includeForks: true };
-
-    expect(filterRepos({ repos, config })).toHaveLength(2);
-  });
-
-  it('excludes repos by name', () => {
-    const repos = [makeRepo(), makeRepo({ name: 'excluded' })];
-    const config = { ...defaultConfig, excludeRepos: ['excluded'] };
-
-    expect(filterRepos({ repos, config })).toHaveLength(1);
-  });
-
-  it('excludes repos by regex pattern', () => {
-    const repos = [
-      makeRepo({ name: 'my-app' }),
-      makeRepo({ name: 'test-utils' }),
-      makeRepo({ name: 'test-helpers' }),
-    ];
-    const config = { ...defaultConfig, excludeRepos: ['/^test-/'] };
-    const result = filterRepos({ repos, config });
-
-    expect(result).toHaveLength(1);
-    expect(result[0].name).toBe('my-app');
-  });
-
-  it('supports mixed exact names and regex patterns in exclude', () => {
-    const repos = [
-      makeRepo({ name: 'keep-me' }),
-      makeRepo({ name: 'drop-this' }),
-      makeRepo({ name: 'experiment-1' }),
-      makeRepo({ name: 'experiment-2' }),
-    ];
-    const config = { ...defaultConfig, excludeRepos: ['drop-this', '/^experiment-/'] };
-    const result = filterRepos({ repos, config });
-
-    expect(result).toHaveLength(1);
-    expect(result[0].name).toBe('keep-me');
-  });
-
-  it('supports regex flags in exclude pattern', () => {
-    const repos = [
-      makeRepo({ name: 'MyProject' }),
-      makeRepo({ name: 'mylib' }),
-      makeRepo({ name: 'other' }),
-    ];
-    const config = { ...defaultConfig, excludeRepos: ['/^my/i'] };
-    const result = filterRepos({ repos, config });
-
-    expect(result).toHaveLength(1);
-    expect(result[0].name).toBe('other');
-  });
-
-  it('filters by minimum stars', () => {
-    const repos = [
-      makeRepo({ stargazers_count: 5 }),
-      makeRepo({ name: 'popular', stargazers_count: 50 }),
-    ];
-    const config = { ...defaultConfig, minStars: 10 };
-    const result = filterRepos({ repos, config });
-
-    expect(result).toHaveLength(1);
-    expect(result[0].name).toBe('popular');
-  });
-
-  it('only_repos overrides all other filters', () => {
-    const repos = [
-      makeRepo({ name: 'wanted', archived: true, fork: true }),
-      makeRepo({ name: 'unwanted' }),
-    ];
-    const config = { ...defaultConfig, onlyRepos: ['wanted'] };
-    const result = filterRepos({ repos, config });
-
-    expect(result).toHaveLength(1);
-    expect(result[0].name).toBe('wanted');
-  });
-
-  it('returns empty array when no repos match only_repos', () => {
-    const repos = [makeRepo()];
-    const config = { ...defaultConfig, onlyRepos: ['nonexistent'] };
-
-    expect(filterRepos({ repos, config })).toHaveLength(0);
-  });
-
-  it('filters by org with only-orgs', () => {
-    const repos = [
-      makeRepo({ name: 'a', owner: { login: 'org-a' } }),
-      makeRepo({ name: 'b', owner: { login: 'org-b' } }),
-    ];
-    const config = { ...defaultConfig, onlyOrgs: ['org-a'] };
-    const result = filterRepos({ repos, config });
-
-    expect(result).toHaveLength(1);
-    expect(result[0].owner.login).toBe('org-a');
-  });
-
-  it('supports regex pattern in only-orgs', () => {
-    const repos = [
-      makeRepo({ name: 'web', owner: { login: 'acme-web' } }),
-      makeRepo({ name: 'api', owner: { login: 'acme-api' } }),
-      makeRepo({ name: 'x', owner: { login: 'other' } }),
-    ];
-    const config = { ...defaultConfig, onlyOrgs: ['/^acme-/'] };
-
-    expect(filterRepos({ repos, config })).toHaveLength(2);
-  });
-
-  it('excludes repos by org with exclude-orgs', () => {
-    const repos = [
-      makeRepo({ name: 'a', owner: { login: 'keep' } }),
-      makeRepo({ name: 'b', owner: { login: 'drop' } }),
-    ];
-    const config = { ...defaultConfig, excludeOrgs: ['drop'] };
-    const result = filterRepos({ repos, config });
-
-    expect(result).toHaveLength(1);
-    expect(result[0].owner.login).toBe('keep');
-  });
-
-  it('supports mixed exact names and regex in exclude-orgs', () => {
-    const repos = [
-      makeRepo({ name: 'a', owner: { login: 'keep' } }),
-      makeRepo({ name: 'b', owner: { login: 'drop-this' } }),
-      makeRepo({ name: 'c', owner: { login: 'experiment-1' } }),
-    ];
-    const config = { ...defaultConfig, excludeOrgs: ['drop-this', '/^experiment-/'] };
-    const result = filterRepos({ repos, config });
-
-    expect(result).toHaveLength(1);
-    expect(result[0].owner.login).toBe('keep');
-  });
-
-  it('matches orgs case-sensitively', () => {
-    const repos = [makeRepo({ name: 'a', owner: { login: 'Org-A' } })];
-    const config = { ...defaultConfig, onlyOrgs: ['org-a'] };
-
-    expect(filterRepos({ repos, config })).toHaveLength(0);
-  });
-
-  it('applies only-orgs before the only-repos override on the narrowed set', () => {
-    const repos = [
-      makeRepo({ name: 'wanted', owner: { login: 'org-a' }, archived: true, fork: true }),
-      makeRepo({ name: 'wanted', owner: { login: 'org-b' } }),
-      makeRepo({ name: 'unwanted', owner: { login: 'org-a' } }),
-    ];
-    const config = { ...defaultConfig, onlyOrgs: ['org-a'], onlyRepos: ['wanted'] };
-    const result = filterRepos({ repos, config });
-
-    expect(result).toHaveLength(1);
-    expect(result[0].owner.login).toBe('org-a');
-    expect(result[0].name).toBe('wanted');
-  });
-
-  it('does not filter by org when org lists are empty', () => {
-    const repos = [
-      makeRepo({ name: 'a', owner: { login: 'org-a' } }),
-      makeRepo({ name: 'b', owner: { login: 'org-b' } }),
-    ];
-
-    expect(filterRepos({ repos, config: defaultConfig })).toHaveLength(2);
-  });
+		expect(mapped).toEqual([
+			{
+				owner: "user",
+				name: "my-repo",
+				fullName: "user/test-repo",
+				private: false,
+				archived: false,
+				fork: false,
+				stars: 42,
+			},
+		]);
+	});
 });
 
-describe('mapRepos', () => {
-  it('maps raw GitHub API repos to clean objects', () => {
-    const repos = [makeRepo({ name: 'my-repo', stargazers_count: 42 })];
-    const mapped = mapRepos(repos);
+describe("fetchRepos", () => {
+	it("fetches all repositories from GitHub API", async () => {
+		const mockRepos = [makeRepo({ name: "repo1" }), makeRepo({ name: "repo2" })];
+		const mockOctokit: MockOctokit = {
+			rest: {
+				repos: {
+					listForAuthenticatedUser: vi.fn().mockResolvedValue({
+						data: mockRepos,
+					}),
+				},
+			},
+		};
+		const result = await fetchRepos({
+			octokit: createMockOctokit(mockOctokit),
+			config: defaultConfig,
+		});
 
-    expect(mapped).toEqual([
-      {
-        owner: 'user',
-        name: 'my-repo',
-        fullName: 'user/test-repo',
-        private: false,
-        archived: false,
-        fork: false,
-        stars: 42,
-      },
-    ]);
-  });
+		expect(result).toEqual(mockRepos);
+		expect(mockOctokit.rest.repos.listForAuthenticatedUser).toHaveBeenCalledWith({
+			per_page: 100,
+			sort: "full_name",
+			visibility: Visibility.ALL,
+			page: 1,
+		});
+	});
+
+	it("handles pagination correctly", async () => {
+		const page1 = Array.from({ length: 100 }, (_, index) => makeRepo({ name: `repo${index}` }));
+		const page2 = Array.from({ length: 50 }, (_, index) => makeRepo({ name: `repo${index + 100}` }));
+		const mockOctokit: MockOctokit = {
+			rest: {
+				repos: {
+					listForAuthenticatedUser: vi
+						.fn()
+						.mockResolvedValueOnce({ data: page1 })
+						.mockResolvedValueOnce({ data: page2 }),
+				},
+			},
+		};
+		const result = await fetchRepos({
+			octokit: createMockOctokit(mockOctokit),
+			config: defaultConfig,
+		});
+
+		expect(result).toHaveLength(150);
+		expect(mockOctokit.rest.repos.listForAuthenticatedUser).toHaveBeenCalledTimes(2);
+	});
+
+	it("stops pagination when empty page is returned", async () => {
+		const mockOctokit: MockOctokit = {
+			rest: {
+				repos: {
+					listForAuthenticatedUser: vi.fn().mockResolvedValue({ data: [] }),
+				},
+			},
+		};
+		const result = await fetchRepos({
+			octokit: createMockOctokit(mockOctokit),
+			config: defaultConfig,
+		});
+
+		expect(result).toEqual([]);
+		expect(mockOctokit.rest.repos.listForAuthenticatedUser).toHaveBeenCalledTimes(1);
+	});
+
+	it("uses public visibility when configured", async () => {
+		const mockOctokit: MockOctokit = {
+			rest: {
+				repos: {
+					listForAuthenticatedUser: vi.fn().mockResolvedValue({ data: [] }),
+				},
+			},
+		};
+		const config = { ...defaultConfig, visibility: Visibility.PUBLIC };
+
+		await fetchRepos({ octokit: createMockOctokit(mockOctokit), config });
+
+		expect(mockOctokit.rest.repos.listForAuthenticatedUser).toHaveBeenCalledWith(
+			expect.objectContaining({ visibility: Visibility.PUBLIC }),
+		);
+	});
+
+	it("uses private visibility when configured", async () => {
+		const mockOctokit: MockOctokit = {
+			rest: {
+				repos: {
+					listForAuthenticatedUser: vi.fn().mockResolvedValue({ data: [] }),
+				},
+			},
+		};
+		const config = { ...defaultConfig, visibility: Visibility.PRIVATE };
+
+		await fetchRepos({ octokit: createMockOctokit(mockOctokit), config });
+
+		expect(mockOctokit.rest.repos.listForAuthenticatedUser).toHaveBeenCalledWith(
+			expect.objectContaining({ visibility: Visibility.PRIVATE }),
+		);
+	});
+
+	it("uses owner affiliation when visibility is owned", async () => {
+		const mockOctokit: MockOctokit = {
+			rest: {
+				repos: {
+					listForAuthenticatedUser: vi.fn().mockResolvedValue({ data: [] }),
+				},
+			},
+		};
+		const config = { ...defaultConfig, visibility: Visibility.OWNED };
+
+		await fetchRepos({ octokit: createMockOctokit(mockOctokit), config });
+
+		expect(mockOctokit.rest.repos.listForAuthenticatedUser).toHaveBeenCalledWith(
+			expect.objectContaining({ visibility: Visibility.ALL, affiliation: "owner" }),
+		);
+	});
+
+	it("throws error with status code when API call fails", async () => {
+		const mockError = Object.assign(new Error("API Error"), { status: 401 });
+		const mockOctokit: MockOctokit = {
+			rest: {
+				repos: {
+					listForAuthenticatedUser: vi.fn().mockRejectedValue(mockError),
+				},
+			},
+		};
+
+		await expect(fetchRepos({ octokit: createMockOctokit(mockOctokit), config: defaultConfig })).rejects.toThrow(
+			"Failed to fetch repositories from GitHub API: HTTP 401 API Error. Verify that your github-token has the correct permissions.",
+		);
+	});
+
+	it("throws error without status code when API call fails", async () => {
+		const mockError = new Error("Network Error");
+		const mockOctokit: MockOctokit = {
+			rest: {
+				repos: {
+					listForAuthenticatedUser: vi.fn().mockRejectedValue(mockError),
+				},
+			},
+		};
+
+		await expect(fetchRepos({ octokit: createMockOctokit(mockOctokit), config: defaultConfig })).rejects.toThrow(
+			"Failed to fetch repositories from GitHub API: Network Error. Verify that your github-token has the correct permissions.",
+		);
+	});
+
+	it("never throws a blank error description when the API error has no message", async () => {
+		const mockOctokit: MockOctokit = {
+			rest: {
+				repos: {
+					listForAuthenticatedUser: vi.fn().mockRejectedValue(new Error("")),
+				},
+			},
+		};
+
+		await expect(fetchRepos({ octokit: createMockOctokit(mockOctokit), config: defaultConfig })).rejects.toThrow(
+			"Failed to fetch repositories from GitHub API: Error. Verify that your github-token has the correct permissions.",
+		);
+	});
 });
 
-describe('fetchRepos', () => {
-  it('fetches all repositories from GitHub API', async () => {
-    const mockRepos = [makeRepo({ name: 'repo1' }), makeRepo({ name: 'repo2' })];
-    const mockOctokit: MockOctokit = {
-      rest: {
-        repos: {
-          listForAuthenticatedUser: vi.fn().mockResolvedValue({
-            data: mockRepos,
-          }),
-        },
-      },
-    };
-    const result = await fetchRepos({
-      octokit: createMockOctokit(mockOctokit),
-      config: defaultConfig,
-    });
+describe("getRepos", () => {
+	beforeEach(() => {
+		vi.clearAllMocks();
+	});
 
-    expect(result).toEqual(mockRepos);
-    expect(mockOctokit.rest.repos.listForAuthenticatedUser).toHaveBeenCalledWith({
-      per_page: 100,
-      sort: 'full_name',
-      visibility: Visibility.ALL,
-      page: 1,
-    });
-  });
+	function octokitReturning(repos: GitHubRepo[]): Octokit {
+		return createMockOctokit({
+			rest: { repos: { listForAuthenticatedUser: vi.fn().mockResolvedValue({ data: repos }) } },
+		});
+	}
 
-  it('handles pagination correctly', async () => {
-    const page1 = Array.from({ length: 100 }, (_, index) => makeRepo({ name: `repo${index}` }));
-    const page2 = Array.from({ length: 50 }, (_, index) =>
-      makeRepo({ name: `repo${index + 100}` }),
-    );
-    const mockOctokit: MockOctokit = {
-      rest: {
-        repos: {
-          listForAuthenticatedUser: vi
-            .fn()
-            .mockResolvedValueOnce({ data: page1 })
-            .mockResolvedValueOnce({ data: page2 }),
-        },
-      },
-    };
-    const result = await fetchRepos({
-      octokit: createMockOctokit(mockOctokit),
-      config: defaultConfig,
-    });
+	it("reports every pattern the tracked set could not read", async () => {
+		await getRepos({
+			octokit: octokitReturning([makeRepo({ name: "keep-me" })]),
+			config: makeConfig({ excludeRepos: ["/[unclosed/"] }),
+		});
 
-    expect(result).toHaveLength(150);
-    expect(mockOctokit.rest.repos.listForAuthenticatedUser).toHaveBeenCalledTimes(2);
-  });
+		expect(core.warning).toHaveBeenCalledWith(
+			'Ignoring invalid pattern "/[unclosed/". Filters expect either an exact name or /pattern/flags.',
+		);
+	});
 
-  it('stops pagination when empty page is returned', async () => {
-    const mockOctokit: MockOctokit = {
-      rest: {
-        repos: {
-          listForAuthenticatedUser: vi.fn().mockResolvedValue({ data: [] }),
-        },
-      },
-    };
-    const result = await fetchRepos({
-      octokit: createMockOctokit(mockOctokit),
-      config: defaultConfig,
-    });
+	it("logs the narrowing at each stage the filters actually ran", async () => {
+		const repos = [
+			makeRepo({ name: "a", owner: { login: "org-a" } }),
+			makeRepo({ name: "b", owner: { login: "org-b" } }),
+		];
 
-    expect(result).toEqual([]);
-    expect(mockOctokit.rest.repos.listForAuthenticatedUser).toHaveBeenCalledTimes(1);
-  });
+		await getRepos({
+			octokit: octokitReturning(repos),
+			config: makeConfig({ onlyOrgs: ["org-a"] }),
+		});
 
-  it('uses public visibility when configured', async () => {
-    const mockOctokit: MockOctokit = {
-      rest: {
-        repos: {
-          listForAuthenticatedUser: vi.fn().mockResolvedValue({ data: [] }),
-        },
-      },
-    };
-    const config = { ...defaultConfig, visibility: Visibility.PUBLIC };
+		expect(core.info).toHaveBeenCalledWith("After only_orgs filter: 1 repos");
+		expect(core.info).toHaveBeenCalledWith("After filtering: 1 repos");
+		expect(core.info).not.toHaveBeenCalledWith(expect.stringContaining("only_repos"));
+	});
 
-    await fetchRepos({ octokit: createMockOctokit(mockOctokit), config });
+	it("reports the only-repos count instead of the general one when it short-circuits", async () => {
+		await getRepos({
+			octokit: octokitReturning([makeRepo({ name: "wanted" }), makeRepo({ name: "other" })]),
+			config: makeConfig({ onlyRepos: ["wanted"] }),
+		});
 
-    expect(mockOctokit.rest.repos.listForAuthenticatedUser).toHaveBeenCalledWith(
-      expect.objectContaining({ visibility: Visibility.PUBLIC }),
-    );
-  });
+		expect(core.info).toHaveBeenCalledWith("After only_repos filter: 1 repos");
+		expect(core.info).not.toHaveBeenCalledWith(expect.stringContaining("After filtering"));
+	});
 
-  it('uses private visibility when configured', async () => {
-    const mockOctokit: MockOctokit = {
-      rest: {
-        repos: {
-          listForAuthenticatedUser: vi.fn().mockResolvedValue({ data: [] }),
-        },
-      },
-    };
-    const config = { ...defaultConfig, visibility: Visibility.PRIVATE };
+	it("fetches, filters, and maps repos", async () => {
+		const mockRepos = [makeRepo({ name: "repo1", stargazers_count: 10 }), makeRepo({ name: "repo2", archived: true })];
+		const mockOctokit: MockOctokit = {
+			rest: {
+				repos: {
+					listForAuthenticatedUser: vi.fn().mockResolvedValue({
+						data: mockRepos,
+					}),
+				},
+			},
+		};
+		const result = await getRepos({
+			octokit: createMockOctokit(mockOctokit),
+			config: defaultConfig,
+		});
 
-    await fetchRepos({ octokit: createMockOctokit(mockOctokit), config });
-
-    expect(mockOctokit.rest.repos.listForAuthenticatedUser).toHaveBeenCalledWith(
-      expect.objectContaining({ visibility: Visibility.PRIVATE }),
-    );
-  });
-
-  it('uses owner affiliation when visibility is owned', async () => {
-    const mockOctokit: MockOctokit = {
-      rest: {
-        repos: {
-          listForAuthenticatedUser: vi.fn().mockResolvedValue({ data: [] }),
-        },
-      },
-    };
-    const config = { ...defaultConfig, visibility: Visibility.OWNED };
-
-    await fetchRepos({ octokit: createMockOctokit(mockOctokit), config });
-
-    expect(mockOctokit.rest.repos.listForAuthenticatedUser).toHaveBeenCalledWith(
-      expect.objectContaining({ visibility: Visibility.ALL, affiliation: 'owner' }),
-    );
-  });
-
-  it('throws error with status code when API call fails', async () => {
-    const mockError = Object.assign(new Error('API Error'), { status: 401 });
-    const mockOctokit: MockOctokit = {
-      rest: {
-        repos: {
-          listForAuthenticatedUser: vi.fn().mockRejectedValue(mockError),
-        },
-      },
-    };
-
-    await expect(
-      fetchRepos({ octokit: createMockOctokit(mockOctokit), config: defaultConfig }),
-    ).rejects.toThrow(
-      'Failed to fetch repositories from GitHub API: HTTP 401 API Error. Verify that your github-token has the correct permissions.',
-    );
-  });
-
-  it('throws error without status code when API call fails', async () => {
-    const mockError = new Error('Network Error');
-    const mockOctokit: MockOctokit = {
-      rest: {
-        repos: {
-          listForAuthenticatedUser: vi.fn().mockRejectedValue(mockError),
-        },
-      },
-    };
-
-    await expect(
-      fetchRepos({ octokit: createMockOctokit(mockOctokit), config: defaultConfig }),
-    ).rejects.toThrow(
-      'Failed to fetch repositories from GitHub API: Network Error. Verify that your github-token has the correct permissions.',
-    );
-  });
-
-  it('never throws a blank error description when the API error has no message', async () => {
-    const mockOctokit: MockOctokit = {
-      rest: {
-        repos: {
-          listForAuthenticatedUser: vi.fn().mockRejectedValue(new Error('')),
-        },
-      },
-    };
-
-    await expect(
-      fetchRepos({ octokit: createMockOctokit(mockOctokit), config: defaultConfig }),
-    ).rejects.toThrow(
-      'Failed to fetch repositories from GitHub API: Error. Verify that your github-token has the correct permissions.',
-    );
-  });
-});
-
-describe('getRepos', () => {
-  it('fetches, filters, and maps repos', async () => {
-    const mockRepos = [
-      makeRepo({ name: 'repo1', stargazers_count: 10 }),
-      makeRepo({ name: 'repo2', archived: true }),
-    ];
-    const mockOctokit: MockOctokit = {
-      rest: {
-        repos: {
-          listForAuthenticatedUser: vi.fn().mockResolvedValue({
-            data: mockRepos,
-          }),
-        },
-      },
-    };
-    const result = await getRepos({
-      octokit: createMockOctokit(mockOctokit),
-      config: defaultConfig,
-    });
-
-    expect(result).toHaveLength(1);
-    expect(result[0]).toEqual({
-      owner: 'user',
-      name: 'repo1',
-      fullName: 'user/test-repo',
-      private: false,
-      archived: false,
-      fork: false,
-      stars: 10,
-    });
-  });
+		expect(result).toHaveLength(1);
+		expect(result[0]).toEqual({
+			owner: "user",
+			name: "repo1",
+			fullName: "user/test-repo",
+			private: false,
+			archived: false,
+			fork: false,
+			stars: 10,
+		});
+	});
 });

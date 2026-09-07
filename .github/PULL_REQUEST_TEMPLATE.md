@@ -1,64 +1,58 @@
 ## Description
 
-<!-- Provide a brief description of the changes in this PR -->
+<!-- What does this change, and why? -->
 
 ## Type of Change
 
-<!-- Please check the one that applies to this PR using "x" -->
+<!-- Check exactly one box, with an "x" -->
 
 - [ ] 🐛 Bug fix (non-breaking change which fixes an issue)
 - [ ] ✨ New feature (non-breaking change which adds functionality)
 - [ ] 💥 Breaking change (fix or feature that would cause existing functionality to not work as expected)
 - [ ] 📝 Documentation update
-- [ ] 🔧 Configuration change
+- [ ] 🔧 Configuration or workflow change
 - [ ] ♻️ Code refactoring
 - [ ] ⚡ Performance improvement
 - [ ] ✅ Test update
 
 ## Related Issue
 
-<!-- If this PR fixes an issue, please link it here -->
-
-Fixes #<!-- issue number -->
+<!-- If this PR closes an issue, uncomment the line below and fill in the number. Otherwise leave it as is. -->
+<!-- Fixes #123 -->
 
 ## Changes Made
 
-<!-- Please describe the changes in detail -->
+<!-- Describe the changes in detail -->
 
--
 -
 -
 
 ## Testing
 
-<!-- Describe the tests you ran to verify your changes -->
+<!-- Describe how you verified your changes -->
 
-- [ ] Existing tests pass (`pnpm test`)
+- [ ] Existing unit tests pass (`pnpm test:ut`)
 - [ ] Added new tests for changes
-- [ ] Manually tested with sample workflow
-- [ ] Verified action builds successfully (`pnpm build`)
-
-## Screenshots (if applicable)
-
-<!-- Add screenshots to help explain your changes -->
+- [ ] Manually tested with a sample workflow
+- [ ] The bundle builds (`pnpm build`)
+- [ ] Attached the rendered output (report, badge or chart) if this PR changes what gets rendered
 
 ## Checklist
 
-<!-- Please check all that apply using "x" -->
+<!-- Check all that apply, with an "x" -->
 
-- [ ] My code follows the style guidelines of this project (`pnpm check`)
+- [ ] `pnpm verify` passes (format check, typecheck, coverage and build)
 - [ ] I have performed a self-review of my own code
-- [ ] I updated the *Public API*, *Invariants* or *Files* sections of any `CLAUDE.md` my change affects
-- [ ] Changed inputs, outputs or defaults are reflected in `action.yml`, the wiki and the README
-- [ ] New or redefined domain vocabulary is in `CONTEXT.md`; a hard-to-reverse decision has an ADR
+- [ ] My change carries no inline comments; rationale lives in this PR, the commit messages, an ADR or the folder's guide
+- [ ] I rebuilt `dist/` with `pnpm build` and committed it, if I touched anything under `src/`
+- [ ] Changed inputs, outputs or defaults are reflected in [`action.yml`](../action.yml), the wiki and the README
+- [ ] I updated any `CLAUDE.md`, [`CONTEXT.md`](../CONTEXT.md), [`ARCHITECTURE.md`](../ARCHITECTURE.md), ADR or wiki page my change affects, in this same PR, and `pnpm test:docs` passes
 - [ ] My changes generate no new warnings or errors
 - [ ] I have added tests that prove my fix is effective or that my feature works
-- [ ] New and existing unit tests pass locally with my changes
-- [ ] Any dependent changes have been merged and published
 
 ## Additional Notes
 
-<!-- Add any additional notes or context about the PR here -->
+<!-- Anything else worth knowing -->
 
 ---
 
@@ -66,7 +60,7 @@ Fixes #<!-- issue number -->
 
 <div align="center">
 
-<!-- Add a funny or cute GIF here -->
+<!-- Add a funny or cute GIF here. Yes, really. -->
 
 _Thanks for contributing!_ ✨
 

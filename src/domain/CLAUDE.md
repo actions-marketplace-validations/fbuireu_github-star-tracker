@@ -5,25 +5,69 @@ snapshot, which snapshot is the baseline, how a star curve is reconstructed and 
 notification is due, and how numbers and dates become short strings. No I/O of any kind. It does not build
 reports (`@presentation/*`) and does not sequence anything (`@application/tracker`).
 
-One module per concept, each with a colocated `*.test.ts`: `comparison`, `snapshot`, `forecast`, `velocity`,
-`stargazers`, `star-history`, `formatting`, `notification`, `time`, plus `types.ts` and `constants.ts`.
+One module per concept, each with a colocated `*.test.ts`: `measurement`, `comparison`, `snapshot`,
+`forecast`, `velocity`, `growth`, `stargazers`, `star-history`, `tracked-set`, `sampling`, `formatting`,
+`notification`, `time`, plus [`types.ts`](./types.ts) and [`constants.ts`](./constants.ts).
+
+[`tracked-set.ts`](./tracked-set.ts) and [`sampling.ts`](./sampling.ts) are the two modules `@infrastructure` calls rather than `@application`.
+Both decide something the network layer would otherwise decide for itself, and both return plain data the
+shell turns into log lines; this layer still cannot log.
+
+`resolveTrackedSet` answers *which repositories a Run measures*: it applies the `only`/`exclude` lists, the
+archived/fork/min-stars rules and the `onlyRepos` short-circuit over `RepoInfo`, and reports
+`afterOnlyOrgs`, `afterOnlyRepos` and the patterns it could not compile. `sampling.ts` plans a Stargazer
+fetch without performing one. `shouldSample` applies the strict threshold, `reachablePages` clamps to
+GitHub's paging ceiling, `sampledPages` picks the evenly-spread pages Smart Sampling reads, and
+`coveredStars` says how many Stars those pages account for, the figure [`star-history.ts`](./star-history.ts) reads to decide
+whether to draw a Ramped Tail. All four are arithmetic, so they belong here and not behind an HTTP client.
+
+## The Run Measurement is the layer's front door
+
+`measureRun` ([`src/domain/measurement.ts`](./measurement.ts)) is the only entry point `@application` uses to turn one
+observation into a Run Measurement, and [ADR 0013](../../docs/adr/0013-a-run-is-measured-in-one-place.md)
+records why. It composes `getBaselineSnapshot`, `compareStars`, `createSnapshot`, `addSnapshot` and
+`shouldNotify` in the one order that is correct, and returns `baselineTimestamp`, `results`, `summary`,
+`updatedHistory`, `droppedSnapshots` and `thresholdReached`.
+
+- **The five it composes stay exported and stay tested.** They are internal seams within this layer, not a
+  surface another layer crosses. Do not call them from outside `@domain`: the ordering rules they carry are
+  what `measureRun` exists to make unreachable.
+- **`measureRun` never advances the Notification baseline.** It reports `thresholdReached` and stops there.
+  `settleNotification` in [`notification.ts`](./notification.ts) is what turns that plus a `Delivery` into the History to persist,
+  and it calls `recordNotification`, which returns a **new** History rather than mutating the one it was
+  handed. That split is [ADR 0011](../../docs/adr/0011-the-notification-baseline-advances-only-on-delivery.md).
+- **`settleNotification` is the only place the delivery rules live.** `shouldNotify` is `changed &&
+  thresholdReached`, the decision; `notificationSent` is `delivery === SENT`, a fact about the transport; and
+  the baseline advances only when the decision held *and* the delivery did not fail, which is why an
+  unconfigured transport (`NOT_ATTEMPTED`) still advances it while a configured-and-failed one does not.
+  `@application` supplies the `Delivery` and reads the outcome; it decides none of this.
+- **`droppedSnapshots` is a count, not a warning.** This layer is pure and cannot log; the shell raises the
+  `max-history` warning from it. It is **derived from the History `addSnapshot` actually returned**, not
+  recomputed from `maxHistory`: the trimming rule is written once, in `addSnapshot`, so the count cannot
+  disagree with the array it describes.
+- **`now` governs the whole measurement, not half of it.** It reaches `getBaselineSnapshot` *and*
+  `createSnapshot`, so an injected clock dates the Snapshot the Run appends as well as the Baseline it
+  resolves. It used to reach only the first, so injecting a `now` produced an `updatedHistory` whose newest
+  Snapshot carried the real time: an interface promising more than it delivered, with tests already
+  relying on the half that worked.
 
 ## Purity and time
 
-- The only wall-clock reads are `createSnapshot` (`new Date().toISOString()`) and the *defaults* of
-  `getBaselineSnapshot({ now })` and `buildStarHistory({ now })`. Never add a third — prefer an injectable
-  `now`.
-- **`toEpochMs` (`src/domain/time.ts`) is the single timestamp entry point** for the whole layer, and it
+- Every wall-clock read in this layer is the *default* of an injectable `now`: `createSnapshot`,
+  `getBaselineSnapshot` and `buildStarHistory`. Never add one that is not.
+- **`toEpochMs` ([`src/domain/time.ts`](./time.ts)) is the single timestamp entry point** for the whole layer, and it
   guarantees a finite number or `null`, never `NaN`. Never reintroduce a raw `Date.parse` here.
 - Internal arithmetic is in **milliseconds**; anything user-facing converts to **days** (`MS_PER_DAY`).
-  `MS_PER_YEAR` is a flat `365 * MS_PER_DAY` — no leap-year correction.
+  `MS_PER_YEAR` is a flat `365 * MS_PER_DAY`, with no leap-year correction.
 - `history.snapshots` is assumed **chronologically ascending**; nothing here sorts it. `getBaselineSnapshot`,
-  `computeVelocity`, `snapshotDays` and `buildAxisLabels` all break silently on unsorted input.
-- Nothing mutates its arguments.
+  `computeVelocity`, `calendarDays` and `buildAxisLabels` all break silently on unsorted input.
+- **Nothing mutates a caller's arguments.** The one parameter that is written to is private to the layer:
+  `resolveTrackedSet` creates the `invalidPatterns` accumulator and threads it into `matchesPattern`, which
+  pushes onto it, so the array a caller sees is only ever the finished one on `TrackedSet`.
 
 ## Comparison semantics
 
-- A repo absent from the baseline is `isNew: true`, `previous: null` and **`delta: 0`** — new repos never
+- A repo absent from the baseline is `isNew: true`, `previous: null` and **`delta: 0`**, so new repos never
   inflate `newStars`.
 - A repo missing from the current list is `isRemoved: true`, `current: 0`, `delta: -previous`, **excluded
   from `summary.totalStars`** but counted in `lostStars`.
@@ -31,20 +75,28 @@ One module per concept, each with a colocated `*.test.ts`: `comparison`, `snapsh
   equal `newStars - lostStars`.
 - `summary.changed` is true if any repo has a non-zero delta **or** is new/removed, so a first run with repos
   always reports `changed: true`.
+- **Top Repositories is defined once, here.** `rankByStars` drops Removed Repositories and orders a **copy**
+  descending by current Star Count; `topRepositories({ repos, limit })` cuts that ranking and returns full
+  names. `@application/tracker` uses it for the charts and the Forecast, `@presentation/report-model` for the
+  Report, and neither re-derives the ordering. That is what stops a Chart and its Report disagreeing about
+  which repositories are the top ones.
 
 ## Snapshot store
 
-`getBaselineSnapshot` resolves the **Comparison Window** — the `compare-against` input — to the single
+`getBaselineSnapshot` resolves the **Comparison Window**, the `compare-against` input, to the single
 snapshot everything else is diffed against.
 
 - Every mode ignores snapshots whose timestamp does not parse, including `last-run`, which walks back to the
-  newest one that does. Empty history → `null`.
+  newest one that does. Empty history yields `null`.
 - Windowed modes pick the **newest** snapshot at or before `now - windowDays + 6h`. That 6-hour slack exists
   so cron jitter does not push a run just under the window.
-- No snapshot old enough → falls back to the **oldest parseable** one; none parseable → `null`.
-- `addSnapshot` trims with `.slice(-maxHistory)`. `maxHistory: 0` would keep the whole array
+- With no snapshot old enough it falls back to the **oldest parseable** one; with none parseable it returns
+  `null`.
+- `addSnapshot` trims with `.slice(-maxHistory)`. `maxHistory: 0` keeps the whole array
   (`slice(-0) === slice(0)`), which is why `@config/loader` rejects a non-positive `max-history` upstream.
-- `repoStarSeries` yields `0` for snapshots where the repo is absent — a gap reads as a drop to zero. The
+  `measureRun` reports `droppedSnapshots: 0` for that case rather than a fabricated count, because it counts
+  the difference rather than restating the rule.
+- `repoStarSeries` yields `0` for snapshots where the repo is absent, so a gap reads as a drop to zero. The
   returned array always matches `snapshots` in length.
 
 ## Forecast, velocity, notifications
@@ -55,15 +107,43 @@ snapshot everything else is diffed against.
 - Projections anchor on the **last observed value**, not the fitted one:
   `predicted = last.value + rate * weekOffset * 7`. Changing this changes every chart. Every prediction is
   clamped to a non-negative integer.
-- `snapshotDays` normalizes by real calendar spacing, so the projection is in calendar weeks whatever the run
+- **Each Top Repository is fitted to its own *reconstruction*, or to the aggregate, and never to the Stored
+  History.** `historyForRepo` is the optional hook `@application` fills with
+  `chartHistories.reconstructedForRepo`, which returns `null` rather than falling back. A repository that
+  returns `null`, or whose own History is shorter than `MIN_SNAPSHOTS_FOR_FORECAST`, is fitted to the
+  aggregate, which holds such a repository **flat at `repo.stars`** (`edges.map(() => repo.stars)`, the issue
+  #148 guard). Flat is the honest answer when there is nothing to reconstruct from.
+- **Each `RepoForecast` says which of the two it was, in `source`** (`ForecastSource`: `OWN` or
+  `AGGREGATE`). It is the one thing about a per-repo Forecast a caller cannot re-derive without repeating the
+  fallback rule above, and `@presentation/charts` reads it to decide whether that repository gets a Forecast
+  Chart of its own: a projection fitted to the aggregate describes the Tracked Set's shape, not the
+  repository's, so it is published as a table and not drawn as a curve.
+- **`forRepo` is the wrong hook to pass here, and passing it was a live bug.** It falls back to the Stored
+  History, where `repoStarSeries` yields `0` for every Snapshot taken before the repository joined the
+  Tracked Set, so a repository whose Stargazers could not be read was projected off a fabricated
+  `0 → total` ramp: 500 Stars became a 4,700 projection. Fitting every repository to the aggregate has the
+  opposite failure, reporting a young repository as static while the Chart above it climbed, and that is what
+  the hook fixes.
+- **All rate arithmetic lives in [`src/domain/growth.ts`](./growth.ts)**, and both consumers cross it: `calendarDays`
+  converts a History to day offsets, `latestRateInterval` finds the newest usable pair, `weightedDailyRate`
+  is the Forecast Method that weights recent movement, and `fitTrend` is the least-squares one. The
+  **Rate Interval** rule (skip any pair closer than `MIN_RATE_INTERVAL_DAYS`) is written once there, so
+  Velocity and Forecast cannot disagree about it.
+- `calendarDays` normalizes by real calendar spacing, so the projection is in calendar weeks whatever the run
   cadence. If **any** timestamp is unparseable it falls back to a synthetic weekly cadence for *all* points.
+  `computeVelocity` does **not** share that policy: it drops unparseable snapshots and returns `null` when
+  the newest one does not parse. The two policies are deliberately different, and
+  [ADR 0017](../../docs/adr/0017-velocity-and-forecast-read-unparseable-timestamps-differently.md) records
+  why: a Forecast needs plausible *spacing*, a Velocity needs a true *duration*, and a synthetic cadence
+  supplies the first honestly and the second not at all. Routing `computeVelocity` through `calendarDays`
+  would turn a `null` into a fabricated rate with no test failing.
 - `computeVelocity` uses the last snapshot and the newest earlier one at least 0.25 days back, skipping
   closer pairs so a manual re-run minutes after a scheduled one cannot inflate the rate. It is a
   recent-period rate, never an all-time average. Callers must pass the **stored** history, not a
   reconstructed chart history, or `starsPerDay` becomes an average over a bucket whose width follows
   `chart-max-points`.
 - `daysToNextMilestone` is `Math.ceil` over the **already-rounded** `starsPerDay`, and is `null` at or above
-  the largest milestone — `nextMilestoneAbove` uses a strict `>`, so exactly 1,000,000 already yields `null`.
+  the largest milestone: `nextMilestoneAbove` uses a strict `>`, so exactly 1,000,000 already yields `null`.
 - `shouldNotify`: `threshold === 0` returns `true` **before** `mode` is considered. The delta is measured
   against `starsAtLastNotification` (accumulating across runs), not the previous snapshot. `net` compares
   `Math.abs(delta)` so a large loss also fires; `gains` compares the signed delta. `'auto'` resolves against
@@ -78,8 +158,8 @@ Charts are rebuilt from raw stargazer timestamps rather than from stored snapsho
 - Bucket count is `clamp(maxPoints, 2, 365)`; `maxPoints: 0` means full history at weekly cadence. The final
   edge is forced to exactly `end`, so the last snapshot is "now".
 - Every per-repo series is **monotonically non-decreasing** and its last value is **exactly `repo.stars`**.
-- A repo with stars but zero fetched dates stays **flat at `repo.stars`** — never a fabricated `0 → total`
-  ramp (issue #148).
+- A repo with stars but zero fetched dates stays **flat at `repo.stars`**, never on a fabricated
+  `0 → total` ramp (issue #148).
 - `reachable = min(coveredStars ?? MAX_REACHABLE_STARGAZERS, repo.stars)`. When it falls short of the true
   total the tail is linearly ramped up to that total instead of flattening at the 40k cap
   ([ADR 0007](../../docs/adr/0007-bridge-unreachable-history-with-a-ramp.md)); otherwise counts are scaled
@@ -89,25 +169,40 @@ Charts are rebuilt from raw stargazer timestamps rather than from stored snapsho
 
 ## Stargazer diffing
 
-`buildStargazerMap` carries a sampled or `incomplete` repo's previous logins forward instead of dropping
+`incomplete` means **"this list is not the whole story"**, not "this list is empty". It covers a fetch that
+returned nothing, one that was cut short mid-pagination, *and* one that ran out of pages at GitHub's
+40,000-stargazer ceiling. The second case used to be flagged only by
+`coveredStars`, which neither guard consulted, so a repo whose fetch died on page 6 of 15 overwrote its
+stored entry with the 500 oldest logins and reported the other 1,000 as new on the next successful Run.
+`@infrastructure` sets it; nothing here recomputes it.
+
+`buildStargazerMap` seeds from the previous map, so a repository that was not observed at all, one that fell
+out of the Tracked Set, keeps its entry too, and nothing prunes the file.
+[ADR 0019](../../docs/adr/0019-the-stargazer-map-retains-untracked-repositories.md) records that trade-off and
+why a grace period is not available. The seed is also what makes a sampled or `incomplete` repo keep its
+previous logins instead of dropping
 them, so a failed fetch cannot wipe an entry and fabricate a spike next run
 ([ADR 0012](../../docs/adr/0012-unreadable-stargazer-lists-keep-their-previous-logins.md)). The matching
-exclusion in `diffStargazers` — a sampled repo is never diffed, because absence from a sample is not
-evidence — is [ADR 0008](../../docs/adr/0008-sampled-repositories-are-excluded-from-stargazer-diffing.md).
+exclusion in `diffStargazers`, that a sampled repo is never diffed because absence from a sample is not
+evidence, is [ADR 0008](../../docs/adr/0008-sampled-repositories-are-excluded-from-stargazer-diffing.md).
 New stargazers sort **descending by `starredAt`** via `localeCompare` on the raw string, correct only while
 every value is a same-format ISO string.
 
 ## Gotchas
 
-- `deltaIndicator(0)` is `'0'`, not `'+0'`; `formatSignedPercent(0)` is `'+0%'` and does **not** round — the
-  caller must.
+- `deltaIndicator(0)` is `'0'`, not `'+0'`; `formatSignedPercent(0)` is `'+0%'` and does **not** round, so
+  the caller must.
 - `formatDate` returns an **empty string** for an unparseable timestamp, matching `buildAxisLabels`, whose
   contract is "an empty label is a tick that must not render". Callers must not assume a non-empty date.
 - `buildAxisLabels` always returns an array the same length as its input, and keeps `lastYear` as closure
-  state across the `.map` — it only works because `map` runs in order on sorted input.
+  state across the `.map`; it only works because `map` runs in order on sorted input.
 - `buildStarHistory` handles a `starred_at` in the future relative to `now` by emitting just two edges,
   silently collapsing the chart to two points.
 - `compareStars` keys the previous snapshot by `fullName` in a `Map`; duplicate entries resolve last-wins
-  without warning.
-- `STAR_MILESTONES` lives in `src/domain/constants.ts` and is consumed by `velocity.ts` **and**
+  without warning. [`comparison.test.ts`](./comparison.test.ts) pins that, so it is behaviour rather than an accident.
+- **Nothing here is exported only so a test can reach it.** `getAdaptiveThreshold`, `getLastSnapshot`,
+  `linearRegression` and `weightedMovingAverage` used to be, and their cases now run through `shouldNotify`,
+  `getBaselineSnapshot` and `growth.ts`'s own interface instead. Adding an export purely to test an internal
+  is the smell that says the module is the wrong shape.
+- `STAR_MILESTONES` lives in `src/domain/constants.ts` and is consumed by [`velocity.ts`](./velocity.ts) **and**
   `@presentation/*`. `constants.ts` and `types.ts` are coverage-excluded.

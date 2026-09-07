@@ -1,181 +1,204 @@
-import { execFileSync } from 'node:child_process';
-import * as fs from 'node:fs';
-import * as core from '@actions/core';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, initializeDataBranch } from './worktree';
+import * as fs from "node:fs";
+import * as path from "node:path";
+import * as core from "@actions/core";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { execute } from "./commands";
+import { cleanup, initializeDataBranch } from "./worktree";
 
-vi.mock('node:fs');
-vi.mock('node:child_process');
-vi.mock('@actions/core', () => ({
-  info: vi.fn(),
-  debug: vi.fn(),
+vi.mock("node:fs");
+vi.mock("./commands", async (importOriginal) => ({
+	...(await importOriginal<typeof import("./commands")>()),
+	execute: vi.fn(),
+}));
+vi.mock("@actions/core", () => ({
+	info: vi.fn(),
+	debug: vi.fn(),
+	setSecret: vi.fn(),
 }));
 
-describe('initializeDataBranch', () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
-  });
+const BRANCH = "star-tracker-data";
+const DATA_DIR = `.${BRANCH}`;
 
-  afterEach(() => {
-    vi.restoreAllMocks();
-  });
+function ranGit(...args: string[]): boolean {
+	return vi.mocked(execute).mock.calls.some(([params]) => JSON.stringify(params.args) === JSON.stringify(args));
+}
 
-  it('configures git user and creates worktree when branch exists', () => {
-    vi.mocked(fs.existsSync).mockReturnValue(false);
-    vi.mocked(execFileSync).mockReturnValue('');
+interface FailGitWhenParams {
+	matches: (args: string[]) => boolean;
+	error?: Error;
+}
 
-    const result = initializeDataBranch({ dataBranch: 'star-tracker-data' });
+function failGitWhen({ matches, error = new Error("git failed") }: FailGitWhenParams): void {
+	vi.mocked(execute).mockImplementation(({ args }) => {
+		if (matches(args)) throw error;
 
-    expect(execFileSync).toHaveBeenCalledWith(
-      'git',
-      ['rev-parse', '--is-inside-work-tree'],
-      expect.any(Object),
-    );
-    expect(execFileSync).toHaveBeenCalledWith(
-      'git',
-      ['config', 'user.name', 'github-actions[bot]'],
-      expect.any(Object),
-    );
-    expect(execFileSync).toHaveBeenCalledWith(
-      'git',
-      ['config', 'user.email', 'github-actions[bot]@users.noreply.github.com'],
-      expect.any(Object),
-    );
-    expect(result).toBe('.star-tracker-data');
-  });
+		return "";
+	});
+}
 
-  it('throws an actionable error when not inside a checked-out repository', () => {
-    vi.mocked(execFileSync).mockImplementationOnce(() => {
-      throw new Error('fatal: not in a git directory');
-    });
+const isRemoteProbe = (args: string[]): boolean => args.includes("ls-remote");
 
-    expect(() => initializeDataBranch({ dataBranch: 'star-tracker-data' })).toThrow(
-      'This action must run inside a checked-out repository. Add an "actions/checkout" step before this action in your workflow.',
-    );
-  });
+function remoteHasBranch(): void {
+	vi.mocked(execute).mockImplementation(({ args }) => (isRemoteProbe(args) ? `abc123	refs/heads/${BRANCH}` : ""));
+}
+const isWorktreeRemove = (args: string[]): boolean => args[0] === "worktree" && args[1] === "remove";
 
-  it('handles existing worktree removal', () => {
-    vi.mocked(fs.existsSync).mockReturnValue(true);
-    vi.mocked(execFileSync)
-      .mockReturnValueOnce('')
-      .mockReturnValueOnce('')
-      .mockReturnValueOnce('')
-      .mockReturnValueOnce('')
-      .mockReturnValueOnce('')
-      .mockReturnValueOnce('')
-      .mockReturnValueOnce('');
+describe("initializeDataBranch", () => {
+	beforeEach(() => {
+		vi.clearAllMocks();
+		vi.mocked(execute).mockReturnValue("");
+		vi.mocked(fs.existsSync).mockReturnValue(false);
+	});
 
-    initializeDataBranch({ dataBranch: 'star-tracker-data' });
+	afterEach(() => {
+		vi.restoreAllMocks();
+	});
 
-    expect(execFileSync).toHaveBeenCalledWith(
-      'git',
-      ['worktree', 'remove', '.star-tracker-data', '--force'],
-      expect.any(Object),
-    );
-  });
+	it("derives the data directory from the branch name", () => {
+		expect(initializeDataBranch({ dataBranch: BRANCH })).toBe(DATA_DIR);
+	});
 
-  it('creates new orphan branch when remote branch does not exist', () => {
-    vi.mocked(fs.existsSync).mockReturnValue(false);
+	it("guards the repository and sets the bot identity before touching the branch", () => {
+		initializeDataBranch({ dataBranch: BRANCH });
 
-    const execError = new Error('Branch not found');
+		expect(ranGit("rev-parse", "--is-inside-work-tree")).toBe(true);
+		expect(ranGit("config", "user.name", "github-actions[bot]")).toBe(true);
+		expect(ranGit("config", "user.email", "github-actions[bot]@users.noreply.github.com")).toBe(true);
+	});
 
-    vi.mocked(execFileSync)
-      .mockReturnValueOnce('')
-      .mockReturnValueOnce('')
-      .mockReturnValueOnce('')
-      .mockImplementationOnce(() => {
-        throw execError;
-      })
-      .mockReturnValueOnce('')
-      .mockReturnValueOnce('')
-      .mockReturnValueOnce('')
-      .mockReturnValueOnce('');
+	it("adds the worktree from the remote branch when it already exists", () => {
+		remoteHasBranch();
 
-    initializeDataBranch({ dataBranch: 'star-tracker-data' });
+		initializeDataBranch({ dataBranch: BRANCH });
 
-    expect(core.info).toHaveBeenCalledWith(
-      'Branch "star-tracker-data" does not exist on remote, will create it',
-    );
-    expect(execFileSync).toHaveBeenCalledWith(
-      'git',
-      ['checkout', '--orphan', 'star-tracker-data'],
-      expect.objectContaining({ cwd: expect.any(String) }),
-    );
-  });
+		expect(ranGit("fetch", "origin", BRANCH)).toBe(true);
+		expect(ranGit("worktree", "add", DATA_DIR, `origin/${BRANCH}`)).toBe(true);
+		expect(ranGit("checkout", "--orphan", BRANCH)).toBe(false);
+	});
 
-  it('refuses to create the branch on a read-only run', () => {
-    vi.mocked(fs.existsSync).mockReturnValue(false);
+	it("lets a failing remote probe through instead of reading it as an absent branch", () => {
+		failGitWhen({ matches: isRemoteProbe, error: new Error("fatal: could not read Username for https://github.com") });
 
-    vi.mocked(execFileSync)
-      .mockReturnValueOnce('')
-      .mockReturnValueOnce('')
-      .mockReturnValueOnce('')
-      .mockImplementationOnce(() => {
-        throw new Error('Branch not found');
-      });
+		expect(() => initializeDataBranch({ dataBranch: BRANCH })).toThrow(/could not read Username/);
+		expect(ranGit("checkout", "--orphan", BRANCH)).toBe(false);
+	});
 
-    expect(() => initializeDataBranch({ dataBranch: 'star-tracker-data', readOnly: true })).toThrow(
-      /does not exist on the remote and this is a read-only run/,
-    );
-    expect(execFileSync).not.toHaveBeenCalledWith(
-      'git',
-      ['checkout', '--orphan', 'star-tracker-data'],
-      expect.anything(),
-    );
-  });
+	it("authenticates the remote probe and the fetch when a token is supplied", () => {
+		remoteHasBranch();
 
-  it('handles worktree removal failure gracefully', () => {
-    vi.mocked(fs.existsSync).mockReturnValue(true);
+		initializeDataBranch({ dataBranch: BRANCH, token: "secret-token" });
 
-    const execError = new Error('Worktree removal failed');
+		const remoteCalls = vi
+			.mocked(execute)
+			.mock.calls.map(([params]) => params.args)
+			.filter((args) => args.includes("ls-remote") || args.includes("fetch"));
 
-    vi.mocked(execFileSync)
-      .mockReturnValueOnce('')
-      .mockReturnValueOnce('')
-      .mockReturnValueOnce('')
-      .mockReturnValueOnce('')
-      .mockImplementationOnce(() => {
-        throw execError;
-      })
-      .mockReturnValueOnce('')
-      .mockReturnValueOnce('');
+		const credential = Buffer.from("x-access-token:secret-token").toString("base64");
 
-    expect(() => initializeDataBranch({ dataBranch: 'star-tracker-data' })).not.toThrow();
-    expect(core.debug).toHaveBeenCalledWith(
-      'Could not remove existing worktree at .star-tracker-data, proceeding anyway',
-    );
-  });
+		expect(remoteCalls).toHaveLength(2);
+		for (const args of remoteCalls) {
+			expect(args.slice(0, 2)).toEqual(["-c", `http.extraheader=AUTHORIZATION: basic ${credential}`]);
+		}
+		expect(core.setSecret).toHaveBeenCalledWith(credential);
+	});
+
+	it("adds exactly one header, so it cannot duplicate itself", () => {
+		remoteHasBranch();
+
+		initializeDataBranch({ dataBranch: BRANCH, token: "secret-token" });
+
+		const probe = vi
+			.mocked(execute)
+			.mock.calls.map(([params]) => params.args)
+			.find((args) => args.includes("ls-remote"));
+
+		expect((probe ?? []).filter((arg) => arg.startsWith("http.extraheader="))).toHaveLength(1);
+	});
+
+	it("throws an actionable error when not inside a checked-out repository", () => {
+		failGitWhen({ matches: (args) => args[0] === "rev-parse" });
+
+		expect(() => initializeDataBranch({ dataBranch: BRANCH })).toThrow(
+			'This action must run inside a checked-out repository. Add an "actions/checkout" step before this action in your workflow.',
+		);
+	});
+
+	it("removes a stale worktree left on disk", () => {
+		vi.mocked(fs.existsSync).mockReturnValue(true);
+
+		initializeDataBranch({ dataBranch: BRANCH });
+
+		expect(ranGit("worktree", "remove", DATA_DIR, "--force")).toBe(true);
+	});
+
+	it("carries on when the stale worktree cannot be removed", () => {
+		vi.mocked(fs.existsSync).mockReturnValue(true);
+		failGitWhen({ matches: isWorktreeRemove });
+
+		expect(() => initializeDataBranch({ dataBranch: BRANCH })).not.toThrow();
+		expect(core.debug).toHaveBeenCalledWith(`Could not remove existing worktree at ${DATA_DIR}, proceeding anyway`);
+	});
+
+	it("creates an orphan branch when the remote branch does not exist", () => {
+		initializeDataBranch({ dataBranch: BRANCH });
+
+		expect(core.info).toHaveBeenCalledWith(`Branch "${BRANCH}" does not exist on remote, will create it`);
+		expect(ranGit("worktree", "add", "--detach", DATA_DIR)).toBe(true);
+		expect(ranGit("checkout", "--orphan", BRANCH)).toBe(true);
+		expect(ranGit("commit", "--allow-empty", "-m", "Initialize star tracker data")).toBe(true);
+		expect(ranGit("fetch", "origin", BRANCH)).toBe(false);
+	});
+
+	it("runs the orphan subcommands inside the worktree", () => {
+		initializeDataBranch({ dataBranch: BRANCH });
+
+		const inWorktree = vi
+			.mocked(execute)
+			.mock.calls.map(([params]) => params)
+			.filter((params) => params.options !== undefined);
+
+		expect(inWorktree.map((params) => params.args[0])).toEqual(["checkout", "rm", "commit"]);
+
+		for (const params of inWorktree) {
+			expect(params.options).toEqual({ cwd: path.resolve(DATA_DIR) });
+		}
+	});
+
+	it("carries on when the new orphan branch has nothing to clear", () => {
+		failGitWhen({ matches: (args) => args[0] === "rm" });
+
+		expect(() => initializeDataBranch({ dataBranch: BRANCH })).not.toThrow();
+		expect(core.debug).toHaveBeenCalledWith("Nothing to remove on the new orphan branch, proceeding anyway");
+	});
+
+	it("refuses to create the branch on a read-only run", () => {
+		expect(() => initializeDataBranch({ dataBranch: BRANCH, readOnly: true })).toThrow(
+			/does not exist on the remote and this is a read-only run/,
+		);
+		expect(ranGit("checkout", "--orphan", BRANCH)).toBe(false);
+	});
 });
 
-describe('cleanup', () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
-  });
+describe("cleanup", () => {
+	beforeEach(() => {
+		vi.clearAllMocks();
+		vi.mocked(execute).mockReturnValue("");
+	});
 
-  afterEach(() => {
-    vi.restoreAllMocks();
-  });
+	afterEach(() => {
+		vi.restoreAllMocks();
+	});
 
-  it('removes worktree', () => {
-    vi.mocked(execFileSync).mockReturnValue('');
+	it("removes the worktree", () => {
+		cleanup("/data");
 
-    cleanup('/data');
+		expect(ranGit("worktree", "remove", "/data", "--force")).toBe(true);
+	});
 
-    expect(execFileSync).toHaveBeenCalledWith(
-      'git',
-      ['worktree', 'remove', '/data', '--force'],
-      expect.any(Object),
-    );
-  });
+	it("never rethrows, so it is safe in a finally", () => {
+		failGitWhen({ matches: isWorktreeRemove, error: new Error("Worktree not found") });
 
-  it('handles worktree removal failure gracefully', () => {
-    vi.mocked(execFileSync).mockImplementation(() => {
-      throw new Error('Worktree not found');
-    });
-
-    expect(() => cleanup('/data')).not.toThrow();
-    expect(core.debug).toHaveBeenCalledWith(
-      'Worktree cleanup for "/data" failed, it may have already been removed',
-    );
-  });
+		expect(() => cleanup("/data")).not.toThrow();
+		expect(core.debug).toHaveBeenCalledWith('Worktree cleanup for "/data" failed, it may have already been removed');
+	});
 });
