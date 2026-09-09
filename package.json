@@ -1,6 +1,6 @@
 {
 	"name": "github-star-tracker",
-	"version": "1.27.0",
+	"version": "1.27.1",
 	"private": true,
 	"description": "GitHub Action to automatically track star count changes across repositories with visual charts, email notifications, and historical reports",
 	"keywords": [
@@ -63,7 +63,7 @@
 		"@actions/github": "9.1.1",
 		"@octokit/plugin-retry": "8.1.1",
 		"js-yaml": "5.4.1",
-		"nodemailer": "9.1.0"
+		"nodemailer": "9.1.1"
 	},
 	"devDependencies": {
 		"@biomejs/biome": "2.5.11",
