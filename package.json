@@ -1,6 +1,6 @@
 {
 	"name": "github-star-tracker",
-	"version": "1.27.1",
+	"version": "1.27.2",
 	"private": true,
 	"description": "GitHub Action to automatically track star count changes across repositories with visual charts, email notifications, and historical reports",
 	"keywords": [
@@ -56,7 +56,9 @@
 		"test:ut:coverage": "pnpm test:ut --coverage",
 		"test:ut:changed": "pnpm test:ut --changed origin/main",
 		"test:docs": "pnpm test:ut docs/docs-consistency.test.ts",
-		"verify": "pnpm format:check && pnpm typecheck && pnpm test:ut:coverage && pnpm build"
+		"verify:static": "pnpm format:check && pnpm typecheck && pnpm build",
+		"verify": "pnpm verify:static && pnpm test:ut:coverage",
+		"verify:changed": "pnpm verify:static && pnpm test:ut:changed"
 	},
 	"dependencies": {
 		"@actions/core": "3.0.1",

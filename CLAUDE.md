@@ -63,10 +63,10 @@ pnpm build            # tsx esbuild.config.ts -> dist/index.js
 pnpm lint             # biome lint, the root command the variants pass paths to
 pnpm lint:all         # lint .
 pnpm lint:all:fix     # lint:all --fix
-pnpm lint:changed     # lint --write, over what changed against main
+pnpm lint:changed     # lint --write, over what biome sees as changed; see the gotcha
 pnpm format           # biome check --write, the root command lint-staged appends files to
 pnpm format:all       # format .
-pnpm format:changed   # format, over what changed against main
+pnpm format:changed   # format, over the same; see the gotcha
 pnpm format:check     # biome check, no writes; what verify runs
 pnpm typecheck        # tsc --noEmit
 pnpm test:ut          # vitest run
@@ -74,10 +74,33 @@ pnpm test:ut:watch    # vitest, watch mode
 pnpm test:ut:coverage # test:ut --coverage (85% threshold, every metric)
 pnpm test:ut:changed  # test:ut --changed origin/main
 pnpm test:docs        # the docs contract alone
-pnpm verify           # format:check && typecheck && test:ut:coverage && build
+pnpm verify:static    # format:check && typecheck && build: everything verify does but the suite
+pnpm verify           # verify:static && test:ut:coverage; what CI runs
+pnpm verify:changed   # verify:static && test:ut:changed; what pre-push runs
 ```
 
 Run one layer with `pnpm vitest run src/domain`, one file with `pnpm vitest run src/domain/forecast.test.ts`.
+
+**A `:changed` variant names a literal base, and computing one is what it must not do.** A `package.json`
+script runs under `cmd` on Windows, where `$(...)` is not substituted but passed through as literal argv, so
+a script that resolved the branch's push target broke every push from a Windows checkout. `test:ut:changed`
+therefore takes `origin/main` outright. On a branch that is wider than the push needs and never narrower, so
+it errs safe.
+
+**Biome's `--changed` selects nothing on `main`, and that is left alone.** It diffs against
+`vcs.defaultBranch`, which is `main`, so standing on `main` there is nothing to compare and
+`pnpm format:changed` answers *Checked 0 files* however much has changed. Setting `defaultBranch` to a
+revision expression works (`@{push}` resolves) and is worse: on a branch with no upstream it silently checks
+nothing and exits zero. Reach for `format:all` instead, which reads this tree in under a second.
+
+**The hooks: `pre-commit` runs lint-staged, `commit-msg` runs commitlint, `pre-push` runs `verify:changed`.**
+The hook deliberately does not run `verify`, because the coverage floor and a changed-only run cannot both
+hold: `vitest.config.ts` sets `coverage.include` over all of `src`, which is what makes v8 report a file no
+test loaded as zero, so any subset run drags the global average under the threshold and fails on a clean
+tree. Coverage is therefore a CI concern. That costs nothing in practice, since `ci.yml` runs the full
+`pnpm verify` on the pushed sha and the `release` job needs it, so a push whose coverage dropped cuts no
+release; what the hook buys is that the slow whole-repo run stops standing between you and a push, which is
+when a hook starts getting skipped with `--no-verify` and protects nothing at all.
 
 ## Structure & aliases
 
@@ -224,6 +247,21 @@ the moment anything above it moves, so prefer naming the symbol.
   [`src/infrastructure/`](./src/infrastructure/CLAUDE.md) names it; `src/config/action-inputs.test.ts` covers
   the manifest rather than a module. [`client.ts`](./src/infrastructure/github/client.ts) is the sole module with no colocated test, so anything else
   missing one is drift, not a convention.
+- **The release config teaches its parsers the `!` grammar, and a bare config silently drops every breaking
+  change.** `@semantic-release/commit-analyzer` falls back to `conventional-changelog-angular`, whose
+  `headerPattern` is `/^(\w*)(?:\((.*)\))?: (.*)$/`: it wants the colon straight after the scope, so
+  `feat(x)!: …` does not match, the commit is analysed with no type at all and the analyser answers *no
+  release*. The job still ends green and publishes nothing, which is the failure mode that matters. Nothing
+  warns you, because `@commitlint/config-conventional` accepts the `!` that the spec defines, so the
+  pull-request title check passes and only the release quietly does nothing. The fix is `parserOpts` on
+  **both** parsing plugins, the analyser and the notes generator, adding `!?` to the header pattern and a
+  `breakingHeaderPattern`; the `preset` route looks tidier and does not work here, because
+  `conventional-changelog-conventionalcommits@10` needs `conventional-changelog-writer@9` while
+  `@semantic-release/release-notes-generator` pins `^8.0.0`, so the notes step dies on *Missing helper*, and
+  pinning an older preset does not help either: the analyser resolves a preset by name from its own directory
+  first, where pnpm's hidden `node_modules/.pnpm/node_modules` hoist exposes whichever copy commitlint
+  installed. `docs/docs-consistency.test.ts` asserts the two plugins carry the same `parserOpts`. Note that
+  `!` then means major on **any** type, exactly as a `BREAKING CHANGE:` footer already did.
 - **Biome allows no suppressions.** Fix the root cause instead of `biome-ignore`. 120-col, tabs, LF,
   double quotes: Biome's defaults bar the line width, and the same config every sibling repo runs;
   [`.gitattributes`](./.gitattributes) pins `* text=auto eol=lf`. `noConsole` is an error with no allowlist: no `console`
