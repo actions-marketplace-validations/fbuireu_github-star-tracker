@@ -634,7 +634,7 @@ const QUOTED_CONSTANTS = [
 	},
 	{
 		name: "MIN_THRESHOLD",
-		file: "vitest.config.ts",
+		file: "vitest.config.mts",
 		doc: GUIDE,
 		mention: (percent: number) => `${percent}%`,
 	},

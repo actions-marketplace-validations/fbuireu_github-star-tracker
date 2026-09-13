@@ -1,5 +1,5 @@
 name: 'GitHub Star Tracker'
-description: 'Track star count changes across your repositories with historical reports and badges'
+description: 'GitHub Action that tracks star counts across your repositories: charts, badges, reports and email notifications when they change'
 author: 'Ferran Buireu'
 
 branding:
