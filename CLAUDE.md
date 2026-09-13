@@ -93,7 +93,7 @@ nothing and exits zero. Reach for `format:all` instead, which reads this tree in
 
 The hooks: `pre-commit` runs lint-staged, `commit-msg` runs commitlint, `pre-push` runs `verify:changed`.
 The hook deliberately does not run `verify`, because the coverage floor and a changed-only run cannot both
-hold: `vitest.config.ts` sets `coverage.include` over all of `src`, which is what makes v8 report a file no
+hold: `vitest.config.mts` sets `coverage.include` over all of `src`, which is what makes v8 report a file no
 test loaded as zero, so any subset run drags the global average under the threshold and fails on a clean
 tree. Coverage is therefore a CI concern, and nothing is lost by that: `ci.yml` runs the full `pnpm verify`
 on the pushed sha and the `release` job needs it, so a push whose coverage dropped cuts no release. What the
@@ -130,7 +130,7 @@ Tests are colocated next to the file they cover, as `src/**/*.test.ts`. The test
 instead of under `src/`.
 
 Aliases are declared **once**, in [`tsconfig.json`](./tsconfig.json) `compilerOptions.paths`. `esbuild.config.ts` derives its
-`alias` map from that object at build time and [`vitest.config.ts`](./vitest.config.ts) sets `resolve.tsconfigPaths: true`, so a
+`alias` map from that object at build time and [`vitest.config.mts`](./vitest.config.mts) sets `resolve.tsconfigPaths: true`, so a
 new alias needs exactly one edit, in `tsconfig.json` rather than in the build or test config. `@i18n` is a
 **file** alias (`"@i18n": ["./src/i18n/index.ts"]`), not a glob: `@i18n/types` does not resolve, so
 re-export from [`src/i18n/index.ts`](./src/i18n/index.ts) instead.
