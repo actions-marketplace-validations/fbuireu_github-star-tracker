@@ -74,9 +74,9 @@ records why. It composes `getBaselineSnapshot`, `compareStars`, `createSnapshot`
 - Removed means absent rather than deleted. A filter edit, an archived repo under `include-archived: false`, a
   `min-stars` rise and a rename reach `compareStars` as the same missing full name, so they all charge their
   whole Star Count to `lostStars`; a rename pairs it with a New Repository carrying `delta: 0`, which is why
-  a run can report a large `lostStars` against `totalDelta: 0`. Three cases in `comparison.test.ts` fix that
-  arithmetic, including a removal of a repo with no stars, whose `delta` is `-0` and so counts as a change
-  that loses nothing. The user-facing half is *Repository Identity* in `docs/wiki/Known-Limitations.md`.
+  a run can report a large `lostStars` against `totalDelta: 0`. Dedicated cases in `comparison.test.ts` fix
+  that arithmetic, including a removal of a repo with no stars, whose `delta` is `-0` and so counts as a
+  change that loses nothing. The user-facing half is *Repository Identity* in `docs/wiki/Known-Limitations.md`.
 - `summary.totalPrevious` is read from `previousSnapshot.totalStars`, not re-summed, so `totalDelta` need not
   equal `newStars - lostStars`.
 - `summary.changed` is true if any repo has a non-zero delta **or** is new/removed, so a first run with repos
