@@ -31,11 +31,7 @@ vi.mock("@actions/core", () => ({
 
 describe("readHistory", () => {
 	beforeEach(() => {
-		vi.clearAllMocks();
-	});
-
-	afterEach(() => {
-		vi.restoreAllMocks();
+		vi.resetAllMocks();
 	});
 
 	it("returns empty history when file does not exist", () => {
@@ -74,11 +70,11 @@ describe("readHistory", () => {
 	});
 
 	it.each([
-		["a string", '{"snapshots":"garbage"}'],
-		["a number", '{"snapshots":5}'],
-		["null", '{"snapshots":null}'],
-		["an object", '{"snapshots":{"2026-01-01":1}}'],
-	])("refuses a snapshots key holding %s rather than silently restarting the tracking record", (_label, contents) => {
+		{ label: "a string", contents: '{"snapshots":"garbage"}' },
+		{ label: "a number", contents: '{"snapshots":5}' },
+		{ label: "null", contents: '{"snapshots":null}' },
+		{ label: "an object", contents: '{"snapshots":{"2026-01-01":1}}' },
+	])("refuses a snapshots key holding $label rather than silently restarting the tracking record", ({ contents }) => {
 		vi.mocked(fs.existsSync).mockReturnValue(true);
 		vi.mocked(fs.readFileSync).mockReturnValue(contents);
 
@@ -100,12 +96,12 @@ describe("readHistory", () => {
 	});
 
 	it.each([
-		["null", "null"],
-		["an array", "[]"],
-		["an array of snapshots", '[{"timestamp":"2026-01-01","totalStars":1,"repos":[]}]'],
-		["a number", "5"],
-		["a string", '"snapshots"'],
-	])("refuses %s rather than silently restarting the tracking record", (_label, contents) => {
+		{ label: "null", contents: "null" },
+		{ label: "an array", contents: "[]" },
+		{ label: "an array of snapshots", contents: '[{"timestamp":"2026-01-01","totalStars":1,"repos":[]}]' },
+		{ label: "a number", contents: "5" },
+		{ label: "a string", contents: '"snapshots"' },
+	])("refuses $label rather than silently restarting the tracking record", ({ contents }) => {
 		vi.mocked(fs.existsSync).mockReturnValue(true);
 		vi.mocked(fs.readFileSync).mockReturnValue(contents);
 
@@ -132,11 +128,89 @@ describe("readHistory", () => {
 
 		expect(() => readHistory("/data")).toThrow(/declares format version "1"/);
 	});
+
+	it("names the version rather than a later key when both are unreadable", () => {
+		vi.mocked(fs.existsSync).mockReturnValue(true);
+		vi.mocked(fs.readFileSync).mockReturnValue('{"version":3,"snapshots":"garbage"}');
+
+		expect(() => readHistory("/data")).toThrow(/declares format version 3/);
+	});
+
+	it.each([
+		{
+			label: "a snapshot that is not an object",
+			contents: '{"snapshots":[null]}',
+			location: "snapshots[0] (expected object, found null)",
+		},
+		{
+			label: "a snapshot with no repos",
+			contents: '{"snapshots":[{"timestamp":"2026-01-01T00:00:00Z","totalStars":3}]}',
+			location: "snapshots[0].repos (expected array, found nothing)",
+		},
+		{
+			label: "a timestamp that is not a string",
+			contents: '{"snapshots":[{"timestamp":20260101,"totalStars":3,"repos":[]}]}',
+			location: "snapshots[0].timestamp (expected string, found 20260101)",
+		},
+		{
+			label: "a snapshot total that is not a number",
+			contents: '{"snapshots":[{"timestamp":"2026-01-01T00:00:00Z","totalStars":"3","repos":[]}]}',
+			location: 'snapshots[0].totalStars (expected number, found "3")',
+		},
+		{
+			label: "a repo entry that is not an object",
+			contents: '{"snapshots":[{"timestamp":"2026-01-01T00:00:00Z","totalStars":3,"repos":["user/test"]}]}',
+			location: 'snapshots[0].repos[0] (expected object, found "user/test")',
+		},
+		{
+			label: "a repo star count that is not a number",
+			contents:
+				'{"snapshots":[{"timestamp":"2026-01-01T00:00:00Z","totalStars":7,"repos":[{"fullName":"user/test","name":"test","owner":"user","stars":"7"}]}]}',
+			location: 'snapshots[0].repos[0].stars (expected number, found "7")',
+		},
+		{
+			label: "a repo with no full name",
+			contents:
+				'{"snapshots":[{"timestamp":"2026-01-01T00:00:00Z","totalStars":7,"repos":[{"name":"test","owner":"user","stars":7}]}]}',
+			location: "snapshots[0].repos[0].fullName (expected string, found nothing)",
+		},
+		{
+			label: "a notification baseline that is a string",
+			contents: '{"snapshots":[],"starsAtLastNotification":"520"}',
+			location: 'starsAtLastNotification (expected number, found "520")',
+		},
+	])("refuses $label and names where it is", ({ contents, location }) => {
+		vi.mocked(fs.existsSync).mockReturnValue(true);
+		vi.mocked(fs.readFileSync).mockReturnValue(contents);
+
+		expect(() => readHistory("/data")).toThrow(
+			`stars-data.json on the data branch has an unreadable value at ${location}.`,
+		);
+	});
+
+	it("keeps keys it does not know about so a write does not drop them", () => {
+		vi.mocked(fs.existsSync).mockReturnValue(true);
+		vi.mocked(fs.readFileSync).mockReturnValue(
+			'{"version":1,"note":"kept","snapshots":[{"timestamp":"2026-01-01T00:00:00Z","totalStars":0,"repos":[],"source":"manual"}]}',
+		);
+
+		expect(readHistory("/data")).toEqual({
+			note: "kept",
+			snapshots: [{ timestamp: "2026-01-01T00:00:00Z", totalStars: 0, repos: [], source: "manual" }],
+		});
+	});
+
+	it("accepts an unparseable timestamp, which velocity and forecast already tolerate", () => {
+		vi.mocked(fs.existsSync).mockReturnValue(true);
+		vi.mocked(fs.readFileSync).mockReturnValue('{"snapshots":[{"timestamp":"not a date","totalStars":0,"repos":[]}]}');
+
+		expect(readHistory("/data").snapshots[0].timestamp).toBe("not a date");
+	});
 });
 
 describe("writeHistory", () => {
 	beforeEach(() => {
-		vi.clearAllMocks();
+		vi.resetAllMocks();
 	});
 
 	it("writes history to file", () => {
@@ -182,7 +256,7 @@ describe("writeHistory", () => {
 
 describe("writeArtefact", () => {
 	beforeEach(() => {
-		vi.clearAllMocks();
+		vi.resetAllMocks();
 	});
 
 	it.each([
@@ -197,25 +271,19 @@ describe("writeArtefact", () => {
 });
 
 describe("writeHtmlReport", () => {
-	const originalRunnerTemp = process.env.RUNNER_TEMP;
-
 	beforeEach(() => {
-		vi.clearAllMocks();
+		vi.resetAllMocks();
 	});
 
 	afterEach(() => {
-		if (originalRunnerTemp === undefined) {
-			delete process.env.RUNNER_TEMP;
-		} else {
-			process.env.RUNNER_TEMP = originalRunnerTemp;
-		}
+		vi.unstubAllEnvs();
 	});
 
 	it("writes the HTML report to RUNNER_TEMP and returns its path", () => {
-		process.env.RUNNER_TEMP = "/runner/tmp";
+		vi.stubEnv("RUNNER_TEMP", "/runner/tmp");
 		const htmlReport = "<p>Report</p>";
 
-		const filePath = writeHtmlReport({ htmlReport });
+		const filePath = writeHtmlReport(htmlReport);
 
 		const expectedPath = path.join("/runner/tmp", "star-tracker-report.html");
 		expect(filePath).toBe(expectedPath);
@@ -223,10 +291,10 @@ describe("writeHtmlReport", () => {
 	});
 
 	it("falls back to the current working directory when RUNNER_TEMP is unset", () => {
-		delete process.env.RUNNER_TEMP;
+		vi.stubEnv("RUNNER_TEMP", undefined);
 		const htmlReport = "<p>Report</p>";
 
-		const filePath = writeHtmlReport({ htmlReport });
+		const filePath = writeHtmlReport(htmlReport);
 
 		expect(filePath).toBe(path.join(process.cwd(), "star-tracker-report.html"));
 	});
@@ -234,7 +302,7 @@ describe("writeHtmlReport", () => {
 
 describe("writeChart", () => {
 	beforeEach(() => {
-		vi.clearAllMocks();
+		vi.resetAllMocks();
 	});
 
 	it("creates charts directory and writes SVG file", () => {
@@ -261,7 +329,7 @@ describe("writeChart", () => {
 
 describe("readStargazers", () => {
 	beforeEach(() => {
-		vi.clearAllMocks();
+		vi.resetAllMocks();
 	});
 
 	it("returns empty map when file does not exist", () => {
@@ -293,6 +361,24 @@ describe("readStargazers", () => {
 		expect(readStargazers("/data")).toEqual({ "user/sound": ["alice"] });
 	});
 
+	it("fails with an actionable message when the stored file is not valid JSON", () => {
+		vi.mocked(fs.existsSync).mockReturnValue(true);
+		vi.mocked(fs.readFileSync).mockReturnValue("{ not json");
+
+		expect(() => readStargazers("/data")).toThrow(/stargazers\.json on the data branch is not valid JSON/);
+	});
+
+	it.each([
+		{ label: "null", contents: "null" },
+		{ label: "a number", contents: "5" },
+		{ label: "a string", contents: '"alice"' },
+	])("returns an empty map for a file holding $label", ({ contents }) => {
+		vi.mocked(fs.existsSync).mockReturnValue(true);
+		vi.mocked(fs.readFileSync).mockReturnValue(contents);
+
+		expect(readStargazers("/data")).toEqual({});
+	});
+
 	it("returns an empty map for a file that is valid JSON but not an object", () => {
 		vi.mocked(fs.existsSync).mockReturnValue(true);
 		vi.mocked(fs.readFileSync).mockReturnValue(JSON.stringify([["alice"]]));
@@ -303,7 +389,7 @@ describe("readStargazers", () => {
 
 describe("writeStargazers", () => {
 	beforeEach(() => {
-		vi.clearAllMocks();
+		vi.resetAllMocks();
 	});
 
 	it("writes stargazer map to file", () => {
@@ -331,9 +417,9 @@ describe("commitAndPush", () => {
 		return vi.mocked(execute).mock.calls.some(([params]) => JSON.stringify(params.args) === JSON.stringify(args));
 	}
 
-	function stageChanges({ pushError }: { pushError?: Error } = {}): void {
+	function stageChanges(pushError?: Error): void {
 		vi.mocked(execute).mockImplementation(({ args }) => {
-			if (args[0] === "diff") throw new Error("Changes detected");
+			if (args.includes("diff")) throw new Error("Changes detected");
 			if (pushError && args.includes("push")) throw pushError;
 
 			return "";
@@ -341,12 +427,8 @@ describe("commitAndPush", () => {
 	}
 
 	beforeEach(() => {
-		vi.clearAllMocks();
+		vi.resetAllMocks();
 		vi.mocked(execute).mockReturnValue("");
-	});
-
-	afterEach(() => {
-		vi.restoreAllMocks();
 	});
 
 	it("commits and pushes changes when there are staged changes", () => {
@@ -371,17 +453,13 @@ describe("commitAndPush", () => {
 	});
 
 	it("explains a rejected push instead of surfacing git’s raw text", () => {
-		stageChanges({
-			pushError: new Error('Git command failed: "git push"\n ! [rejected] HEAD -> star-tracker-data (fetch first)'),
-		});
+		stageChanges(new Error('Git command failed: "git push"\n ! [rejected] HEAD -> star-tracker-data (fetch first)'));
 
 		expect(() => commitAndPush(push)).toThrow(/Another run pushed to "star-tracker-data" while this one was working/);
 	});
 
 	it("lets any other push failure through untouched", () => {
-		stageChanges({
-			pushError: new Error('Git command failed: "git push"\nfatal: Authentication failed'),
-		});
+		stageChanges(new Error('Git command failed: "git push"\nfatal: Authentication failed'));
 
 		expect(() => commitAndPush(push)).toThrow(/Authentication failed/);
 	});
@@ -394,7 +472,7 @@ describe("commitAndPush", () => {
 
 describe("pruneCharts", () => {
 	beforeEach(() => {
-		vi.clearAllMocks();
+		vi.resetAllMocks();
 	});
 
 	it("deletes chart files no longer produced and keeps the current ones", () => {

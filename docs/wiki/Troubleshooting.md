@@ -4,7 +4,9 @@ Solutions for common issues with GitHub Star Tracker.
 
 > [!NOTE]
 > Anything that fails the run arrives in the log as `Star Tracker failed: <message>`, so the useful half is
-> always what follows the colon. Search this page for that half.
+> always what follows the colon. Search this page for that half. [How It Works](How-It-Works#execution-flow) tags,
+> phase by phase, everything that fails a run, only thins it, or only warns, and what a run that failed has already
+> done by then.
 
 ## Authentication
 
@@ -31,6 +33,21 @@ integration. Verify that your github-token has the correct permissions.`
 **Cause:** Using the default `GITHUB_TOKEN` instead of a Personal Access Token.
 
 **Fix:** The default `GITHUB_TOKEN` cannot list repositories across your account. You must create a Personal Access Token. See **[Personal Access Token (PAT)](<Personal-Access-Token-(PAT)>)**.
+
+### "API rate limit exceeded", With a Permissions Hint
+
+The run fails with
+`Star Tracker failed: Failed to fetch repositories from GitHub API: HTTP 403 API rate limit exceeded for user ID ...
+Verify that your github-token has the correct permissions.`
+
+**Cause:** the token's hourly REST quota ran out before the run could list your repositories. GitHub answers that with
+a `403`, and the action's retry plugin never retries a `403` (it retries a `429`, server errors and network failures,
+three times each). The permissions hint is attached to every failed listing request, so here it points the wrong way:
+the token is fine.
+
+**Fix:** wait for the quota to reset, which the `x-ratelimit-reset` header of any API response gives, and re-run. If
+it recurs, the stargazer fetches are usually what spent it: turn on `smart-sampling`, narrow the Tracked Set, or run
+less often. [Known Limitations](Known-Limitations#stargazer-api-rate-limits) has the cost per repository.
 
 ### Token Works Locally but Fails in Actions
 
@@ -89,14 +106,32 @@ trailing `/`, `.` or `.lock`.
 `v1.2.3` are all fine. This one throws rather than warning because falling back to the default branch would
 silently write your data somewhere you did not ask for.
 
+A `data_branch` in `star-tracker.yml` that YAML reads as a number, a boolean or a list fails with its own
+message instead, `Invalid data-branch 2026 in the config file. It must be a string, so quote it in the config
+file.` Quote the value: `data_branch: "2026"`.
+
+### "Invalid github-api-url ..."
+
+```
+Star Tracker failed: Invalid github-api-url "<value>" (read from the input, or from GITHUB_API_URL when the
+input is empty). Every request carries the token, and plain http would send it in clear text, so set an absolute
+https URL, such as https://github.example.com/api/v3.
+```
+
+**Cause:** the `github-api-url` input, or the runner's `GITHUB_API_URL` when the input is empty, is not an
+absolute `https` URL. A bare host name is the usual culprit, and so is an `http://` URL, which would carry the
+token unencrypted.
+
+**Fix:** give the full API base URL with the `https` scheme, e.g. `https://github.example.com/api/v3`.
+
 ### "Invalid visibility ..."
 
 ```
 Star Tracker failed: Invalid visibility "<value>". Must be one of: public, private, all, owned
 ```
 
-**Cause:** a typo in `visibility`. It throws rather than warning because every other value changes *which
-repositories are tracked*, so a silent fallback would quietly report on the wrong set.
+**Cause:** a typo in `visibility`. It throws rather than warning because every other value changes _which
+repositories are tracked_, so a silent fallback would quietly report on the wrong set.
 
 **Fix:** use one of the values above.
 
@@ -113,11 +148,19 @@ Star Tracker failed: stars-data.json on the data branch is not valid JSON (<pars
 the file on that branch and re-run.
 ```
 
-**Cause:** the stored history was hand-edited, truncated by a failed push, or merged badly.
+**Cause:** the stored history was hand-edited, truncated by a failed push, or merged badly. The same message names
+`stargazers.json` when that is the file whose bytes do not parse; it is read only with `track-stargazers` on, and
+fails the run just the same.
 
-**Fix:** correct the JSON on the data branch, or delete `stars-data.json` there to start the history over.
-The action deliberately refuses to read it as empty, because that would append a snapshot over the top of a
-record it had just discarded.
+**Fix:** correct the JSON on the data branch, or delete the file there. Deleting `stars-data.json` starts the history
+over; the action deliberately refuses to read it as empty, because that would append a snapshot over the top of a
+record it had just discarded. Deleting `stargazers.json` costs less, but its next run reports every existing
+stargazer as new.
+
+`stargazers.json` is the one file the action repairs rather than refuses, as long as it parses: a file that is not an
+object is read as empty, and an entry that is not a list of logins is dropped. That is silent, and every stargazer of
+the repositories it lost is reported as new on the next run. See
+[Data Management](Data-Management#stargazer-data).
 
 ### "... is valid JSON but not an object"
 
@@ -129,6 +172,20 @@ Reading it as an empty history would discard your tracking record, so this run s
 **Cause:** the file holds `null`, `[]`, a number or a string. Usually a script that overwrote it.
 
 **Fix:** restore the object shape (`{"version": 1, "snapshots": []}` at minimum) or delete the file.
+
+### "... has an unreadable value at ..."
+
+```
+Star Tracker failed: stars-data.json on the data branch has an unreadable value at snapshots[3].repos[0].stars
+(expected number, found "7"). Reading past it would misreport or overwrite your tracking record, so this run
+stops instead. Fix or delete the file on that branch and re-run.
+```
+
+**Cause:** the file is an object with a `snapshots` list, but one entry has the wrong shape: a snapshot with
+no `repos` list, a star count or total written as a string, a repository entry with no `fullName`, or a
+`starsAtLastNotification` that is not a number. Always a hand edit or a script: the action never writes these.
+
+**Fix:** correct the value at the path the message names, or delete the file to start the history over.
 
 ### "... declares format version N, which this version of the action does not understand"
 
@@ -168,7 +225,18 @@ Star Tracker failed: Git command failed: "git <args>"
 above. The second line is git's own message and is the part worth reading.
 
 **Fix:** depends entirely on that message. Missing `permissions: contents: write`, a protected branch rule
-on the data branch and a detached or shallow checkout are the usual causes.
+on the data branch and a detached or shallow checkout are the usual causes. A checkout owned by another user,
+typical in a container job, fails the first command with `detected dubious ownership`; run the
+`git config --global --add safe.directory` command git prints before the action.
+
+When the failing command is `git worktree add` and git says the path `already exists`, or is a missing but already
+registered worktree, something left `.<data-branch>` behind, typically on a self-hosted runner that keeps its
+workspace between runs. Delete that directory, or run `git worktree prune`, before the action.
+
+When the failing command is the `push`, the run had already done everything else: the email, if one was due, went out,
+and the HTML report was written. What it did not do is record the snapshot, or set any output, since the outputs are
+set after the push. Fix the cause and re-run; the next email may repeat the last one, because the notification
+baseline it would have advanced was never pushed either.
 
 ---
 
@@ -190,7 +258,6 @@ after each filtering stage, which localises it quickly.
 ### `new-stargazers` Is 0 Although Stars Clearly Moved
 
 **Cause:** the stargazer diff skips certain kinds of repository.
-
 - A **sampled** repository (one over `smart-sampling-threshold` while `smart-sampling` is on) is never
   diffed, because absence from a sample is not evidence that someone unstarred. These are named in a note in
   the report.
@@ -259,7 +326,8 @@ finishes last is refused. The usual trigger is a scheduled run plus a manual **R
 happen if a run takes longer than the schedule interval.
 
 **What it means:** that run's snapshot was not recorded. Its report and email had already gone out, because
-the email is sent before the data is saved, so you may receive a digest for a run that ends red.
+the email is sent before the data is saved, so you may receive a digest for a run that ends red. Its outputs were
+never set, so a later step gated on one of them did not run.
 
 **Fix:** re-run it. The next run records the current totals and nothing is lost but that one snapshot.
 To stop it recurring, give the workflow a concurrency group so runs queue instead of overlapping:
@@ -296,9 +364,8 @@ on whichever one should not be the writer.
 ### Chart Is a Flat or Straight Line
 
 **Cause:** The stargazers fetch for that repository came back empty or failed, so its history cannot be reconstructed. The run log includes a warning naming the affected repository and, for failures, the API error. Common reasons:
-
 - Transient GitHub-side failures. During the [2026 stargazers restriction](https://github.blog/changelog/2026-06-30-upcoming-access-restrictions-to-public-api-endpoints-and-ui-views/) rollout (~July 5–13, 2026) the endpoint intermittently returned `404`s, empty lists, or `5xx` errors with an empty/plain-text body **even to repository admins**, most commonly on deep pagination of very large (40,000+ star) repos. Since v1.22.3 the run log always includes the HTTP status (`Failed to fetch stargazers for <repo>: HTTP 5xx ...`), so you can tell a real restriction (`403`/`404`) apart from a transient server error at a glance, and `5xx`/network errors are retried automatically before being reported. Verify with `curl -i -H "Authorization: Bearer <token>" -H "Accept: application/vnd.github.star+json" "https://api.github.com/repos/<owner>/<repo>/stargazers?per_page=1"`. If it returns `200` with data, just re-run the workflow: charts are reconstructed from scratch on every run.
-- The token's user is not an admin or collaborator on the repository, per the same restriction: the list comes back `404` or empty (`200 []`) silently. Note this is about the user's *role*, not token scopes (implicit admin through org ownership works with a classic PAT). Typical setups: a fine-grained PAT without a grant on the repository's organization, or org repositories where you are a member with read access only. See [Known Limitations](Known-Limitations#stargazers-api-access-restriction-2026).
+- The token's user is not an admin or collaborator on the repository, per the same restriction: the list comes back `404` or empty (`200 []`) silently. Note this is about the user's _role_, not token scopes (implicit admin through org ownership works with a classic PAT). Typical setups: a fine-grained PAT without a grant on the repository's organization, or org repositories where you are a member with read access only. See [Known Limitations](Known-Limitations#stargazers-api-access-restriction-2026).
 - Rate limiting on large repositories. A repository above 40,000 stars costs 400 API requests per run without smart sampling; a handful of large repos can exhaust the 5,000 requests/hour REST quota mid-run.
 
 Since v1.22.3, a single failing page no longer discards the rest of a repo's history: the action keeps whatever pages it could fetch, logs which ones it had to skip, and scales the chart to the real coverage. If the repo's list still comes back completely empty, the per-repo chart falls back to the Stored History, which only covers the period the action has been running.
@@ -314,12 +381,17 @@ Since v1.22.3, a single failing page no longer discards the rest of a repo's his
 ### Charts Not Updating
 
 **Possible causes:**
-- No star changes detected (the action skips the commit)
-- Workflow failed silently
+- The run failed, or did not run at all. Every writing run commits, even when no star moved, because it appends a
+  snapshot and rewrites the report, so a data branch without a fresh commit means no writing run finished
+- The workflow is a [`read-only`](Configuration#read-only) one, which never commits
+- The image is cached. `raw.githubusercontent.com` and GitHub's image proxy both cache an embedded SVG for a few
+  minutes
+- The repository was renamed or transferred. Its per-repo chart is named after its full name, so the chart moved to a
+  new file and the old one was pruned; an embed of the old URL then shows nothing
 
-**Fix:** Check the workflow run logs in **Actions** tab. If stars haven't changed, no commit is made - this is expected.
-
-> Star-history charts plot the true cumulative curve from each stargazer's `starred_at` date, not one point per run. If stars haven't changed, no new commit is made (expected).
+**Fix:** Check the workflow run logs in the **Actions** tab, then the data branch's history. A chart whose curve looks
+unchanged on a run where stars did not move is expected: star-history charts plot the cumulative curve from each
+stargazer's `starred_at` date, not one point per run.
 
 ### Broken Chart Images in README
 
@@ -384,8 +456,8 @@ A daily schedule with a condition like `if: steps.tracker.outputs.new-stars >= 1
   uses: fbuireu/github-star-tracker@v1
   with:
     github-token: ${{ secrets.STAR_TRACKER_TOKEN }}
-    notification-threshold: '500'
-    notification-mode: 'gains'
+    notification-threshold: "500"
+    notification-mode: "gains"
 
 - name: Send email
   if: steps.tracker.outputs.should-notify == 'true'
@@ -414,11 +486,12 @@ A weekly `cron` on its own does not widen the reporting period. The report is di
 ### Log Says `Invalid smtp-port "..."`
 
 ```
-Invalid smtp-port "465 ". Falling back to 587.
+Invalid smtp-port "ssl". Falling back to 587.
 ```
 
-**Cause:** `smtp-port` was not a whole number between 1 and 65535. A stray space, a quote inside the value
-or a non-numeric secret all do it. The run does **not** fail.
+**Cause:** `smtp-port` did not start with a whole number between 1 and 65535: a word, a quote inside the value,
+a secret that expands to text, `0` or a number above 65535 all do it. The adapter reads the leading integer, so
+`465 ` and `465abc` are read as `465` without a warning. The run does **not** fail.
 
 **Fix:** the fallback matters more than the warning. Port `465` means implicit SSL and anything else means
 STARTTLS, so a rejected `465` silently switches the transport and the connection then fails against an
@@ -464,11 +537,11 @@ before this action in your workflow.
 
 **Cause:** The workflow is missing the `actions/checkout` step. The action stores its data in a Git branch, so it needs the repository checked out before it runs.
 
-**Fix:** Add `actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3` as the first step:
+**Fix:** Add `actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1` as the first step:
 
 ```yaml
 steps:
-  - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+  - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
   - uses: fbuireu/github-star-tracker@v1
     with:
       github-token: ${{ secrets.STAR_TRACKER_TOKEN }}
@@ -489,8 +562,11 @@ steps:
 ### Workflow Runs but Nothing Happens
 
 **Possible causes:**
-- No star changes detected (expected - no commit is made)
-- All repos filtered out
+- No star moved. The run still commits a new snapshot and rewritten report, so the data branch gains a commit, but
+  `stars-changed` is `false` and no email is due
+- All repos filtered out. The run warns `No repositories matched the configured filters` and never opens the data
+  branch, so nothing is committed
+- The workflow is `read-only`, which never commits
 
 **Fix:** Check the workflow run logs. The action logs which repos are tracked and any filtering that occurred.
 
@@ -512,7 +588,7 @@ steps:
 
 ```yaml
 with:
-  config-path: '.github/star-tracker.yml'
+  config-path: ".github/star-tracker.yml"
 ```
 
 Ensure the file exists at that path on the branch where the workflow runs.
@@ -537,10 +613,10 @@ See **[Configuration Precedence](Configuration#configuration-precedence)**.
 
 ```yaml
 # Correct
-exclude-repos: '/^test-.*/'
+exclude-repos: "/^test-.*/"
 
 # Incorrect - treated as literal string
-exclude-repos: '^test-.*'
+exclude-repos: "^test-.*"
 ```
 
 An unwrapped pattern is not an error; it becomes an exact name to match, and simply matches nothing.
@@ -551,7 +627,7 @@ An unwrapped pattern is not an error; it becomes an exact name to match, and sim
 Ignoring invalid pattern "/[unclosed/". Filters expect either an exact name or /pattern/flags.
 ```
 
-**Cause:** the value *was* wrapped in `/` but the body is not a regex the engine can compile. This is the
+**Cause:** the value _was_ wrapped in `/` but the body is not a regex the engine can compile. This is the
 warning to look for when a filter has no effect: it names the offending pattern, which the entry above
 cannot. Each distinct bad pattern is reported once, treated as matching nothing, and never fails the run.
 
@@ -564,7 +640,6 @@ repository name (or the owner, for the org filters).
 ## Getting Help
 
 If your issue isn't covered here:
-
 1. Check the **[workflow run logs](https://docs.github.com/en/actions/monitoring-and-troubleshooting-workflows/viewing-workflow-run-history)** for detailed error messages
 2. Open an issue at **[github-star-tracker/issues](https://github.com/fbuireu/github-star-tracker/issues)**
 3. Include: workflow file, error logs, and expected vs actual behavior

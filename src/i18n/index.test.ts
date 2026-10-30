@@ -1,7 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { getTranslations, interpolate, LOCALE_MAP, LOCALES } from "./index";
+import { getTranslations, interpolate, LOCALE_MAP, LOCALES, type Locale } from "./index";
 
 const INTL_LOCALE_CODE_PATTERN = /^[a-z]{2}-[A-Z]{2}$/;
+
+const leafKeys = (bundle: object): string[] =>
+	Object.entries(bundle).flatMap(([key, value]) =>
+		typeof value === "object" && value !== null ? leafKeys(value).map((leaf) => `${key}.${leaf}`) : [key],
+	);
 
 describe("interpolate prototype safety", () => {
 	it("does not resolve a placeholder from the prototype chain", () => {
@@ -34,10 +39,11 @@ describe("interpolate", () => {
 });
 
 describe("getTranslations", () => {
-	it("returns English translations by default", () => {
-		const t = getTranslations("en");
+	it("falls back to English for a locale outside the union, prototype keys included", () => {
+		const english = getTranslations("en");
 
-		expect(t.report.title).toBe("Star Tracker Report");
+		expect(getTranslations("fr" as Locale)).toBe(english);
+		expect(getTranslations("toString" as Locale)).toBe(english);
 	});
 
 	it("returns English translations for en locale", () => {
@@ -49,19 +55,19 @@ describe("getTranslations", () => {
 	it("returns Spanish translations for es locale", () => {
 		const t = getTranslations("es");
 
-		expect(t.report.title).toBe("Informe de Seguimiento de Estrellas");
+		expect(t.report.title).toBe("Informe de seguimiento de estrellas");
 	});
 
 	it("returns Catalan translations for ca locale", () => {
 		const t = getTranslations("ca");
 
-		expect(t.report.title).toBe("Informe de Seguiment d'Estrelles");
+		expect(t.report.title).toBe("Informe de seguiment d'estrelles");
 	});
 
 	it("returns Italian translations for it locale", () => {
 		const t = getTranslations("it");
 
-		expect(t.report.title).toBe("Report Tracciamento Stelle");
+		expect(t.report.title).toBe("Report di monitoraggio delle stelle");
 	});
 });
 
@@ -70,10 +76,24 @@ describe("LOCALES", () => {
 		expect(LOCALES).toEqual(["en", "es", "ca", "it"]);
 	});
 
-	it("has a translation bundle for every listed locale", () => {
-		for (const locale of LOCALES) {
-			expect(getTranslations(locale).report.title).toBeTruthy();
-		}
+	it("has a bundle of its own for every listed locale, not the English fallback", () => {
+		const titles = LOCALES.map((locale) => getTranslations(locale).report.title);
+
+		expect(new Set(titles).size).toBe(LOCALES.length);
+	});
+
+	it("gives every bundle exactly the keys of en.json", () => {
+		const english = leafKeys(getTranslations("en"));
+		const drift = LOCALES.flatMap((locale) => {
+			const keys = leafKeys(getTranslations(locale));
+
+			return [
+				...keys.filter((key) => !english.includes(key)).map((key) => `${locale}: extra ${key}`),
+				...english.filter((key) => !keys.includes(key)).map((key) => `${locale}: missing ${key}`),
+			];
+		});
+
+		expect(drift).toEqual([]);
 	});
 
 	it("maps every locale to an Intl code", () => {

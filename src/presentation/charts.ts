@@ -4,8 +4,8 @@ import { buildStarHistory } from "@domain/star-history";
 import type { RepoStargazers } from "@domain/stargazers";
 import type { History, SnapshotRepo } from "@domain/types";
 import type { ChartRequest } from "./chart-spec";
-import { ChartKind } from "./chart-spec";
-import { CHART_FILES, MIN_SNAPSHOTS_FOR_CHART } from "./constants";
+import { ChartKind, isPlottable } from "./chart-spec";
+import { CHART_FILES } from "./constants";
 import { perRepoChartFile, perRepoForecastChartFile } from "./shared";
 import { renderSvgChart } from "./svg-chart";
 import type { ChartHistories } from "./types";
@@ -23,7 +23,7 @@ interface ResolveChartHistoryParams {
 }
 
 function resolveChartHistory({ candidate, fallback }: ResolveChartHistoryParams): History {
-	return candidate.snapshots.length >= MIN_SNAPSHOTS_FOR_CHART ? candidate : fallback;
+	return isPlottable(candidate) ? candidate : fallback;
 }
 
 interface ResolveChartHistoriesParams {
@@ -34,6 +34,11 @@ interface ResolveChartHistoriesParams {
 	now?: Date;
 }
 
+interface ReconstructParams {
+	subset: SnapshotRepo[];
+	stargazers: RepoStargazers[];
+}
+
 export function resolveChartHistories({
 	config,
 	storedHistory,
@@ -41,7 +46,7 @@ export function resolveChartHistories({
 	repoStargazers,
 	now = new Date(),
 }: ResolveChartHistoriesParams): ChartHistories {
-	const reconstruct = ({ subset, stargazers }: { subset: SnapshotRepo[]; stargazers: RepoStargazers[] }): History =>
+	const reconstruct = ({ subset, stargazers }: ReconstructParams): History =>
 		config.includeCharts
 			? buildStarHistory({
 					repoStargazers: stargazers,
@@ -64,7 +69,7 @@ export function resolveChartHistories({
 					stargazers: repoStargazers.filter((entry) => entry.repoFullName === repoFullName),
 				})
 			: null;
-		const resolved = candidate !== null && candidate.snapshots.length >= MIN_SNAPSHOTS_FOR_CHART ? candidate : null;
+		const resolved = candidate !== null && isPlottable(candidate) ? candidate : null;
 
 		reconstructions.set(repoFullName, resolved);
 
@@ -96,7 +101,7 @@ export function buildChartFiles({
 }: BuildChartFilesParams): ChartFile[] {
 	const history = chartHistories.aggregate;
 
-	if (!config.includeCharts || history.snapshots.length < MIN_SNAPSHOTS_FOR_CHART) {
+	if (!config.includeCharts || !isPlottable(history)) {
 		return [];
 	}
 

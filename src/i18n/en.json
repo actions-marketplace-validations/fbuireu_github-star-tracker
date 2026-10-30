@@ -5,6 +5,7 @@
 	"report": {
 		"title": "Star Tracker Report",
 		"total": "Total",
+		"totalStars": "Total Stars",
 		"change": "Change",
 		"comparedTo": "Compared to snapshot from {date}",
 		"firstRun": "first run",
@@ -26,6 +27,7 @@
 		"byRepository": "By Repository",
 		"individualRepoCharts": "Individual Repository Charts",
 		"repoChartHeading": "{name}: {count} ★ ({delta})",
+		"repoChartTitle": "{name} Star History",
 		"trendLine": "Trend",
 		"badges": {
 			"new": "NEW"
@@ -35,11 +37,6 @@
 		"subject": "GitHub Star Tracker Report",
 		"subjectLine": "{subject}: {totalStars} ({delta})",
 		"defaultFrom": "GitHub Star Tracker"
-	},
-	"trends": {
-		"up": "up",
-		"down": "down",
-		"stable": "stable"
 	},
 	"velocity": {
 		"sectionTitle": "Growth Velocity",
@@ -61,14 +58,12 @@
 	},
 	"forecast": {
 		"sectionTitle": "Growth Forecast",
-		"predictedStars": "Predicted Stars",
 		"week": "Week {n}",
 		"linearRegression": "Linear Regression",
 		"weightedMovingAverage": "Weighted Moving Average",
 		"aggregate": "Aggregate Forecast",
 		"byRepository": "By Repository",
-		"insufficientData": "Not enough data for forecast (need at least 3 snapshots)",
-		"method": "Method",
-		"predicted": "Predicted"
+		"repoChartTitle": "{name} Growth Forecast",
+		"method": "Method"
 	}
 }

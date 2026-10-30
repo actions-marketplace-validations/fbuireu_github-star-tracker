@@ -1,5 +1,5 @@
 import type { ForecastResult } from "@domain/forecast";
-import { deltaIndicator, formatSignedPercent, trendIcon } from "@domain/formatting";
+import { deltaIndicator, formatSignedPercent, isoDate, trendIcon } from "@domain/formatting";
 import { getTranslations, interpolate, type Translations } from "@i18n";
 import { chartImageUrl } from "./chart";
 import type { ChartRequest } from "./chart-spec";
@@ -55,7 +55,16 @@ export function generateHtmlReport({ model, config }: RenderReportParams): strin
 	const t = getTranslations(locale);
 	const palette = resolvePalette(theme);
 	const chartUrl = (request: ChartRequest): string | null => chartImageUrl({ request, locale, theme, ...style });
-	const { summary, sorted, newRepos, removedRepos, now, prev, chartHistory: history, forecast: forecastData } = model;
+	const {
+		summary,
+		sorted,
+		newRepos,
+		removedRepos,
+		now,
+		baselineSnapshotDate,
+		chartHistory: history,
+		forecast: forecastData,
+	} = model;
 
 	const rows = sorted
 		.map((repo) => {
@@ -154,7 +163,7 @@ export function generateHtmlReport({ model, config }: RenderReportParams): strin
 	const stargazers = model.stargazers;
 	const sampledNoteHtml =
 		stargazers && stargazers.sampledRepos.length > 0
-			? `<p style="color:${palette.neutral};">${interpolate({ template: t.stargazers.sampledNote, params: { repos: stargazers.sampledRepos.join(", ") } })}</p>`
+			? `<p style="color:${palette.neutral};">${interpolate({ template: t.stargazers.sampledNote, params: { repos: stargazers.sampledRepos.map(escapeHtml).join(", ") } })}</p>`
 			: "";
 
 	const stargazerSection =
@@ -175,7 +184,7 @@ export function generateHtmlReport({ model, config }: RenderReportParams): strin
           <div style="display:flex;align-items:center;margin:4px 0;">
             <img src="${escapeHtml(stargazer.avatarUrl)}" width="32" height="32" style="border-radius:50%;margin-right:8px;">
             <a href="${escapeHtml(stargazer.profileUrl)}" style="color:${palette.link};text-decoration:none;font-weight:600;">${escapeHtml(stargazer.login)}</a>
-            <span style="color:${palette.neutral};margin-left:8px;font-size:12px;">${interpolate({ template: t.stargazers.starredOn, params: { date: stargazer.starredAt.split("T")[0] } })}</span>
+            <span style="color:${palette.neutral};margin-left:8px;font-size:12px;">${interpolate({ template: t.stargazers.starredOn, params: { date: escapeHtml(isoDate(stargazer.starredAt)) } })}</span>
           </div>`,
 						)
 						.join("")}
@@ -203,8 +212,8 @@ export function generateHtmlReport({ model, config }: RenderReportParams): strin
 							: ""
 					}
           ${
-						velocity.projection
-							? `<li>${interpolate({ template: t.velocity.projection, params: { days: velocity.projection.days, milestone: velocity.projection.milestone } })}</li>`
+						velocity.nextMilestone
+							? `<li>${interpolate({ template: t.velocity.projection, params: { days: velocity.nextMilestone.days, milestone: velocity.nextMilestone.milestone } })}</li>`
 							: ""
 					}
         </ul>`
@@ -239,7 +248,7 @@ export function generateHtmlReport({ model, config }: RenderReportParams): strin
 					.map(
 						(repo) => `
         <div style="margin-top:16px;">
-          ${buildHtmlForecastTable({ title: repo.repoFullName, forecasts: repo.forecasts, t, palette })}
+          ${buildHtmlForecastTable({ title: escapeHtml(repo.repoFullName), forecasts: repo.forecasts, t, palette })}
           ${
 						repo.chartHistory !== null
 							? `<div style="margin-top:12px;text-align:center;">
@@ -268,13 +277,13 @@ export function generateHtmlReport({ model, config }: RenderReportParams): strin
 <body style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif;max-width:600px;margin:0 auto;padding:20px;color:${palette.text};background-color:${palette.white};">
   <div style="text-align:center;padding:20px 0;border-bottom:2px solid ${palette.accent};">
     <h1 style="margin:0;font-size:24px;">${t.report.title}</h1>
-    <p style="color:${palette.neutral};margin:8px 0 0;">${now} ${model.isFirstRun ? `| ${t.report.firstRun}` : `| ${interpolate({ template: t.report.comparedTo, params: { date: prev } })}`}</p>
+    <p style="color:${palette.neutral};margin:8px 0 0;">${now} ${model.isFirstRun ? `| ${t.report.firstRun}` : `| ${interpolate({ template: t.report.comparedTo, params: { date: baselineSnapshotDate } })}`}</p>
   </div>
 
   <div style="display:flex;justify-content:space-around;padding:20px 0;text-align:center;">
     <div>
       <div style="font-size:28px;font-weight:700;">${summary.totalStars}</div>
-      <div style="color:${palette.neutral};font-size:12px;">${t.report.total} ${t.report.stars}</div>
+      <div style="color:${palette.neutral};font-size:12px;">${t.report.totalStars}</div>
     </div>
     <div>
       <div style="font-size:28px;font-weight:700;color:${deltaColor({ delta: summary.totalDelta, palette })};">${deltaIndicator(summary.totalDelta)}</div>

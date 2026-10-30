@@ -227,6 +227,9 @@ with:
 > - ends with `/`, `.` or `.lock`
 >
 > Anything else is accepted, including slashes in the middle (`star-tracker/data` is fine).
+>
+> In `star-tracker.yml` the value must be a string. An unquoted `data_branch: 2026` or `data_branch: true` is a
+> YAML number or boolean, and fails the run asking you to quote it.
 
 ---
 
@@ -240,6 +243,8 @@ GitHub API base URL for GitHub Enterprise Server (GHES) instances.
 | **Default** | - (auto-detected on GHES runners via `GITHUB_API_URL`) |
 
 When running on a GHES runner, the action automatically detects the API URL from the `GITHUB_API_URL` environment variable. Only set this input if you need to override the auto-detected value or if you are running on a github.com runner targeting a GHES instance.
+
+Whichever of the two supplies it, the value must be an absolute `https` URL, because every request carries the token and plain `http` would send it in clear text. Anything else (a bare host such as `github.example.com`, an `http://` URL, another scheme) fails the run before any request is made, instead of surfacing later as a fetch error that blames the token.
 
 ```yaml
 with:
@@ -371,7 +376,13 @@ Track individual stargazers and show new ones in reports.
 When enabled, the action fetches the full stargazer list for each repo, diffs against the previous run, and shows new stargazers with avatar, profile link, and starred date.
 
 > [!WARNING]
-> This is API-intensive. Each repo requires `ceil(stars / 100)` API calls. See **[Known Limitations](Known-Limitations)** for rate limit details.
+> This is API-intensive: each repo costs `floor(stars / 100) + 1` API calls, capped at 400. Charts are on by default
+> and already pay that cost, so turning this on adds the diff, not the fetch. See
+> **[Known Limitations](Known-Limitations#stargazer-api-rate-limits)** for rate limit details.
+>
+> The first run with this on reports **every** existing stargazer as new, because there is no stored list to diff
+> against yet. So does a repository's first run after it joins the Tracked Set or is renamed, since the list is keyed
+> by the repository's full name. From the next run on, only real newcomers are reported.
 
 ```yaml
 with:
@@ -389,7 +400,7 @@ Whether to add a growth-velocity section to the Markdown and HTML reports.
 | **Type** | `boolean` |
 | **Default** | `false` |
 
-When `true`, the report gains a "Growth Velocity" section: stars gained per day, percent growth, and a projection of how many days remain until the next star milestone at the current pace.
+When `true`, the report gains a "Growth Velocity" section: stars gained per day, percent growth, and how many days remain until the next star milestone at the current pace.
 
 The figures are measured period over period, comparing the latest snapshot against the newest earlier one at least 0.25 days (6 hours) back. Measuring over a recent interval keeps them tied to current momentum rather than an arbitrary all-time baseline, and skipping any pair closer together than that minimum stops a manual re-run minutes after a scheduled one from inflating the rate.
 
@@ -412,7 +423,8 @@ Filter repositories by visibility.
 - `private`: only private repos
 - `owned`: only repos you own (excludes collaborator repos)
 
-An unrecognised value **fails the run** rather than falling back. This and [`data-branch`](#data-branch) are the only inputs that behave that way.
+An unrecognised value **fails the run** rather than falling back, as an invalid [`data-branch`](#data-branch) or
+[`github-api-url`](#github-api-url) does. [Validation](#validation) lists everything that fails a run at startup.
 
 ```yaml
 with:
@@ -528,11 +540,11 @@ Custom star counts to use as milestone reference lines instead of the built-in d
 | **Type** | `string` (comma-separated integers) |
 | **Default** | - |
 
-A comma-separated list of positive star counts (e.g. `"250, 750, 2500"`) that replaces the built-in thresholds. Values are sorted and de-duplicated, non-positive and non-numeric entries are ignored, and an input with no valid numbers at all logs a warning and falls back to the built-in list. When empty, the built-in list is used.
+A comma-separated list of positive star counts (e.g. `"250, 750, 2500"`) that replaces the built-in milestones. Values are sorted and de-duplicated, non-positive and non-numeric entries are ignored, and an input with no valid numbers at all logs a warning and falls back to the built-in list. When empty, the built-in list is used.
 
 Everything else about milestone lines, including the built-in values and which of them actually get drawn, is described under [`chart-milestones`](#chart-milestones), and this input does nothing while that one is off.
 
-In a config file you can provide either a quoted comma-separated string or a YAML list:
+In a config file you can provide a quoted comma-separated string, a YAML list, or a single number (`chart_custom_milestones: 1000`):
 
 ```yaml
 chart_custom_milestones: "250, 750, 2500"
@@ -688,6 +700,8 @@ Y-axis label side.
 | **Default** | `left` |
 | **Options** | `left`, `right` |
 
+Only affects the SVG charts; the chart images embedded in the email always draw their labels on the left.
+
 ---
 
 ### `email-theme`
@@ -720,7 +734,9 @@ Some of these inputs take lists: `exclude-orgs`, `exclude-repos`, `only-orgs` an
 
 Each is a comma-separated list, and each entry is either an **exact, case-sensitive name** or a **regular expression wrapped in slashes**, optionally with flags: `/^demo-.*/`, `/^demo-.*/i`. The `only-orgs` and `exclude-orgs` lists match the owner name; `only-repos` and `exclude-repos` match the repository name on its own, without the owner. In a config file the same lists can be written as YAML sequences, one entry per line. An entry that looks like a regex but does not compile is skipped with the warning `Ignoring invalid pattern "..."` rather than failing the run.
 
-They compose: `only-orgs` narrows first, then `only-repos` narrows what is left, then the exclusions apply.
+They compose in a fixed order: `only-orgs` narrows first. Then, if `only-repos` is set, its matches among what is left
+**are** the Tracked Set, and archived, forks, `exclude-repos`, `exclude-orgs` and `min-stars` are not applied at all.
+Without `only-repos`, the archived and fork filters, the two exclusion lists and `min-stars` apply in turn.
 
 ### `exclude-orgs`
 
@@ -922,11 +938,15 @@ Star change threshold before sending a notification.
 
 The keyword is matched literally: `'auto'` in lowercase, with no surrounding spaces. Anything else warns and falls through. See [How Values Are Parsed](#how-values-are-parsed).
 
+The number is not checked for sign, and a negative threshold is accepted. In `net` mode the absolute change can never
+be below it, so it is reached on every run, like `0`; in `gains` mode it is reached unless the total fell by more than
+its size since the Notification Baseline.
+
 The threshold is **cumulative, not per-run**. It is measured against the Notification Baseline, stored as `starsAtLastNotification` in `stars-data.json` on the data branch. Runs that do not notify leave that baseline untouched, so the accumulated change keeps growing across runs until it trips the threshold. How that change is measured is controlled by [`notification-mode`](#notification-mode).
 
 The baseline advances only when the notification actually went out. If a configured SMTP send fails, the action logs a warning, leaves the baseline where it was and keeps accumulating, so the change is not lost. When no SMTP transport is configured at all, the `should-notify` output *is* the notification, so the baseline advances as soon as the threshold trips.
 
-On a data branch that has never sent a notification there is no stored baseline (`starsAtLastNotification` is absent and treated as `0`), so the first run fires immediately and then settles into the cumulative rhythm. That is not the case if you were already running with the default `notification-threshold: '0'`. Every changed run has been notifying, so the Notification Baseline already holds your current total, and raising the threshold fires nothing immediately: the next email waits until the total actually moves by at least the threshold.
+On a data branch that has never sent a notification there is no stored baseline (`starsAtLastNotification` is absent and treated as `0`), so the accumulated change is your whole star total: the first run fires as soon as that total reaches the threshold, which on most accounts means immediately, and then settles into the cumulative rhythm. That is not the case if you were already running with the default `notification-threshold: '0'`. Every changed run has been notifying, so the Notification Baseline already holds your current total, and raising the threshold fires nothing immediately: the next email waits until the total actually moves by at least the threshold.
 
 This is what drives the `should-notify` output, which additionally requires that something actually changed. To express "email me every N stars", gate your notification step on `should-notify`, not on `new-stars >= N`. The `new-stars` and `lost-stars` outputs are **per-run** figures measured against the Baseline Snapshot (see [`compare-against`](#compare-against)); they are not cumulative and carry no memory of whether an email was sent, so `new-stars >= N` would require N stars within a single run and would almost never fire on a daily schedule.
 
@@ -1012,7 +1032,8 @@ SMTP authentication username.
 
 The action validates inputs at startup:
 
-- [`visibility`](#visibility) and [`data-branch`](#data-branch) are the only inputs whose invalid values fail the run; a missing `github-token` fails it too. Every other invalid value falls back rather than failing, including non-positive `max-history`, `top-repos` and `smart-sampling-pages`, and negative `min-stars`, `smart-sampling-threshold` and `chart-max-points`
+- These fail the run before anything is fetched: an invalid [`visibility`](#visibility) or [`data-branch`](#data-branch), a config file at `config-path` that exists but cannot be read, a missing `github-token`, and a [`github-api-url`](#github-api-url) (or, when it is empty, a runner's `GITHUB_API_URL`) that is not an absolute `https` URL. Every other invalid value falls back rather than failing, including non-positive `max-history`, `top-repos` and `smart-sampling-pages`, and negative `min-stars`, `smart-sampling-threshold` and `chart-max-points`
+- A config file that is not valid YAML warns and is ignored as a whole. One that is valid YAML but not a mapping (a list, or a bare string) is ignored without a warning
 - **For most keys an invalid input falls to the *next layer*, not straight to the default.** `max-history: 'abc'` in the workflow with `max_history: 104` in the file yields 104, not 52. The enum keys behave differently: a non-empty but unrecognised value goes straight to the default and the config file is never consulted, and `chart-custom-milestones` is the same
 - **Only the enum keys warn about a bad config-file value.** `locale`, `compare-against`, `notification-mode`, `chart-curve`, `chart-range`, `chart-theme`, `email-theme` and `chart-y-axis-side` are checked whichever layer the value came from; every other key warns only about a bad *input*, so `min_stars: "abc"` in the YAML falls back silently. `send-on-no-changes` never warns at all, and `visibility` does not warn either: it **throws**
 

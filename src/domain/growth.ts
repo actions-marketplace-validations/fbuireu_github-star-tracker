@@ -33,19 +33,12 @@ export function calendarDays(history: History): number[] {
 }
 
 export function latestRateInterval(points: SeriesPoint[]): RateInterval | null {
-	if (points.length < MIN_POINTS_FOR_RATE) return null;
+	const to = points.at(-1);
+	if (to === undefined || points.length < MIN_POINTS_FOR_RATE) return null;
 
-	const to = points[points.length - 1];
+	const from = points.slice(0, -1).findLast((point) => to.day - point.day >= MIN_RATE_INTERVAL_DAYS);
 
-	for (let index = points.length - 2; index >= 0; index--) {
-		const days = to.day - points[index].day;
-
-		if (days < MIN_RATE_INTERVAL_DAYS) continue;
-
-		return { from: points[index], to, days };
-	}
-
-	return null;
+	return from === undefined ? null : { from, to, days: to.day - from.day };
 }
 
 export function weightedDailyRate(points: SeriesPoint[]): number {
@@ -54,11 +47,11 @@ export function weightedDailyRate(points: SeriesPoint[]): number {
 	const dailyRates: number[] = [];
 
 	for (let index = 1; index < points.length; index++) {
-		const elapsedDays = points[index].day - points[index - 1].day;
+		const interval = latestRateInterval([points[index - 1], points[index]]);
 
-		if (elapsedDays < MIN_RATE_INTERVAL_DAYS) continue;
+		if (interval === null) continue;
 
-		dailyRates.push((points[index].value - points[index - 1].value) / elapsedDays);
+		dailyRates.push((interval.to.value - interval.from.value) / interval.days);
 	}
 
 	if (dailyRates.length === 0) return 0;

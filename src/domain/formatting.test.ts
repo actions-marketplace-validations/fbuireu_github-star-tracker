@@ -1,15 +1,37 @@
+import { LOCALES, type Locale } from "@i18n";
 import { describe, expect, it } from "vitest";
 import {
 	buildAxisLabels,
-	DASH,
-	DOWN_ARROW,
 	deltaIndicator,
 	formatCount,
 	formatDate,
 	formatSignedPercent,
+	intlCode,
+	isoDate,
 	trendIcon,
-	UP_ARROW,
 } from "./formatting";
+
+describe("isoDate", () => {
+	it("keeps the date of an ISO timestamp", () => {
+		expect(isoDate("2026-01-15T10:00:00Z")).toBe("2026-01-15");
+		expect(isoDate("2026-01-15T10:00:00.123+02:00")).toBe("2026-01-15");
+	});
+
+	it("returns a value that has no time part unchanged", () => {
+		expect(isoDate("2026-01-15")).toBe("2026-01-15");
+		expect(isoDate("")).toBe("");
+	});
+});
+
+describe("intlCode", () => {
+	it("names the Intl code each Locale formats with, in the order the bundles are listed", () => {
+		expect(LOCALES.map((locale) => intlCode(locale))).toEqual(["en-US", "es-ES", "ca-ES", "it-IT"]);
+	});
+
+	it("falls back to the English code for a value outside the union", () => {
+		expect(intlCode("fr" as Locale)).toBe("en-US");
+	});
+});
 
 describe("formatCount", () => {
 	it("formats small numbers as-is", () => {
@@ -64,20 +86,20 @@ describe("formatSignedPercent", () => {
 
 describe("trendIcon", () => {
 	it("returns up arrow for positive delta", () => {
-		expect(trendIcon(1)).toBe(UP_ARROW);
+		expect(trendIcon(1)).toBe("⬆️");
 	});
 
 	it("returns down arrow for negative delta", () => {
-		expect(trendIcon(-1)).toBe(DOWN_ARROW);
+		expect(trendIcon(-1)).toBe("⬇️");
 	});
 
 	it("returns dash for zero delta", () => {
-		expect(trendIcon(0)).toBe(DASH);
+		expect(trendIcon(0)).toBe("➖");
 	});
 });
 
 describe("formatDate", () => {
-	it("formats date in English by default", () => {
+	it("formats date in English", () => {
 		const result = formatDate({ timestamp: "2026-03-15T00:00:00Z", locale: "en" });
 
 		expect(result).toContain("Mar");
@@ -118,12 +140,12 @@ describe("buildAxisLabels", () => {
 		expect(labels).toEqual(["2023", "", "2024", "", "2025"]);
 	});
 
-	it("emits the year label only at the first occurrence of each year", () => {
+	it("switches to year labels once the span reaches exactly one year", () => {
 		const timestamps = ["2023-01-01T12:00:00Z", "2023-06-01T12:00:00Z", "2024-01-01T12:00:00Z"];
 
 		const labels = buildAxisLabels({ timestamps, locale: "en" });
 
-		expect(labels.filter(Boolean)).toEqual(["2023", "2024"]);
+		expect(labels).toEqual(["2023", "", "2024"]);
 	});
 
 	it("falls back to day-level labels for spans shorter than a year", () => {

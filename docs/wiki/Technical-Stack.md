@@ -6,9 +6,9 @@ For the shape of the code itself, read **[Architecture](Architecture)** for the 
 
 ## Architecture, Briefly
 
-The codebase is a Functional Core, Imperative Shell split across its layers: `domain`, `presentation` and `i18n` are pure, `config`, `infrastructure` and `application` own the side effects, and `shared` holds cross-cutting test fixtures. Dependencies flow inward only, cross-layer imports go through a TypeScript path alias declared once in [`tsconfig.json`](https://github.com/fbuireu/github-star-tracker/blob/main/tsconfig.json), and every function taking two or more arguments takes a single destructured object instead.
+The codebase is a Functional Core, Imperative Shell split across its layers: `domain`, `presentation` and `i18n` are pure, `config`, `infrastructure` and `application` own the side effects, and `shared` holds cross-cutting code no layer owns (`errorMessage`, the schema-issue wording and the test fixtures). Dependencies flow inward only, cross-layer imports go through a TypeScript path alias declared once in [`tsconfig.json`](https://github.com/fbuireu/github-star-tracker/blob/main/tsconfig.json), and every function taking two or more arguments takes a single destructured object instead.
 
-That shape is **Domain-Driven Design<sub>(ish)</sub>**, and the parenthesis matters: what is adopted is the ubiquitous language and the layer boundaries, not the tactical pattern catalogue. **[Architecture](Architecture)** says which patterns were dropped and why. The normative version of all of it is `ARCHITECTURE.md` and the per-layer `CLAUDE.md` files in the repository.
+That shape is **Domain-Driven Design<sub>(ish)</sub>**, and the parenthesis matters: what is adopted is the ubiquitous language and the layer boundaries, not the tactical pattern catalogue. **[Architecture](Architecture)** says which patterns were dropped and why. The normative version of all of it is `ARCHITECTURE.md`, `CODING_STANDARDS.md` and the per-layer `AGENTS.md` files in the repository.
 
 ---
 
@@ -18,28 +18,28 @@ TypeScript, bundled by esbuild into a single committed [`dist/index.js`](https:/
 
 There are different Node versions in play, deliberately:
 
-| Number | Where it is pinned | What it governs |
-|---|---|---|
-| **Node 24** | `runs.using: 'node24'` in [`action.yml`](https://github.com/fbuireu/github-star-tracker/blob/main/action.yml), and `target: 'node24'` in [`esbuild.config.ts`](https://github.com/fbuireu/github-star-tracker/blob/main/esbuild.config.ts) | The runtime that actually executes the action on a GitHub runner. This is the version a `node:` API has to exist in |
-| **The `engines.node` pin** | `engines.node` in [`package.json`](https://github.com/fbuireu/github-star-tracker/blob/main/package.json), mirrored in [`.nvmrc`](https://github.com/fbuireu/github-star-tracker/blob/main/.nvmrc) | The development pin: what contributors install, and what `@types/node` describes |
+| Number                     | Where it is pinned                                                                                                                                                                                                                         | What it governs                                                                                                     |
+| -------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------- |
+| **Node 24**                | `runs.using: 'node24'` in [`action.yml`](https://github.com/fbuireu/github-star-tracker/blob/main/action.yml), and `target: 'node24'` in [`esbuild.config.ts`](https://github.com/fbuireu/github-star-tracker/blob/main/esbuild.config.ts) | The runtime that actually executes the action on a GitHub runner. This is the version a `node:` API has to exist in |
+| **The `engines.node` pin** | `engines.node` in [`package.json`](https://github.com/fbuireu/github-star-tracker/blob/main/package.json), mirrored in [`.nvmrc`](https://github.com/fbuireu/github-star-tracker/blob/main/.nvmrc)                                         | The development pin: what contributors install, and what `@types/node` describes                                    |
 
 The gap is a trap worth knowing about before you contribute. esbuild's `target` lowers syntax but does not shim runtime APIs, so a `node:` API added after 24.x will type-check, bundle and pass the full local check, then throw on a runner. Check new `node:` usage against Node 24, not against `engines.node`.
 
-`tsconfig.json` targets ES2022 with `moduleResolution: bundler`, plus `isolatedModules` and `verbatimModuleSyntax`, so every file transpiles standalone and import elision stays explicit. Strict type-checking is on by default in the pinned TypeScript version, so the config no longer declares it.
+`tsconfig.json` targets ES2025, in `target` and `lib`, because that is the edition the Node 24 runtime implements whole, with `moduleResolution: bundler`, plus `isolatedModules` and `verbatimModuleSyntax`, so every file transpiles standalone and import elision stays explicit. Strict type-checking is on by default in the pinned TypeScript version, so the config no longer declares it.
 
 ---
 
 ## Tooling
 
-| Tool | Purpose | Why |
-|---|---|---|
-| **Biome** | Linting + formatting | One tool replaces ESLint + Prettier, with one config and one pass over the tree |
-| **esbuild** | Bundling | Tree shaking and single-file output, fast enough to run on every `pre-push` hook without anyone noticing |
-| **Vitest** | Testing | ESM-native, and it resolves the `tsconfig.json` path aliases natively, so the test config needs no plugin and cannot drift from the build |
-| **pnpm** | Package manager | Strict dependency resolution prevents phantom dependencies from reaching the bundle |
-| **Husky** | Git hooks | Formatting and commit linting before the mistake reaches CI |
-| **semantic-release** | Versioning & releases | Version numbers derived from conventional commits, never hand-edited |
-| **commitlint** | Commit message validation | Makes the conventional-commit format the release process depends on non-optional |
+| Tool                 | Purpose                   | Why                                                                                                                                       |
+| -------------------- | ------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
+| **Biome**            | Linting + formatting      | One tool replaces ESLint + Prettier, with one config and one pass over the tree                                                           |
+| **esbuild**          | Bundling                  | Tree shaking and single-file output, fast enough to run on every `pre-push` hook without anyone noticing                                  |
+| **Vitest**           | Testing                   | ESM-native, and it resolves the `tsconfig.json` path aliases natively, so the test config needs no plugin and cannot drift from the build |
+| **pnpm**             | Package manager           | Strict dependency resolution prevents phantom dependencies from reaching the bundle                                                       |
+| **Husky**            | Git hooks                 | Formatting and commit linting before the mistake reaches CI                                                                               |
+| **semantic-release** | Versioning & releases     | Version numbers derived from conventional commits, never hand-edited                                                                      |
+| **commitlint**       | Commit message validation | Makes the conventional-commit format the release process depends on non-optional                                                          |
 
 ---
 
@@ -47,13 +47,14 @@ The gap is a trap worth knowing about before you contribute. esbuild's `target` 
 
 The runtime packages, all bundled into `dist/index.js`:
 
-| Package | Purpose |
-|---|---|
-| `@actions/core` | GitHub Actions I/O (inputs, outputs, logging) |
-| `@actions/github` | Octokit client for the GitHub API |
-| `@octokit/plugin-retry` | Automatic retries for transient GitHub API failures |
-| `js-yaml` | YAML config file parsing |
-| `nodemailer` | SMTP email delivery |
+| Package                 | Purpose                                                                                                                         |
+| ----------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
+| `@actions/core`         | GitHub Actions I/O (inputs, outputs, logging)                                                                                   |
+| `@actions/github`       | Octokit client for the GitHub API                                                                                               |
+| `@octokit/plugin-retry` | Automatic retries for transient GitHub API failures                                                                             |
+| `js-yaml`               | YAML config file parsing                                                                                                        |
+| `nodemailer`            | SMTP email delivery                                                                                                             |
+| `zod`                   | Runtime validation of untrusted data (the stored history, GitHub responses, inputs and the config file), imported as `zod/mini` |
 
 Because the bundle carries them, the action installs nothing at run time: GitHub executes `dist/index.js` straight from the repository, and the consumer has **zero runtime dependencies** to audit or resolve.
 
@@ -75,6 +76,10 @@ The action creates a temporary working directory for the data branch with `git w
 
 [`src/i18n/index.ts`](https://github.com/fbuireu/github-star-tracker/blob/main/src/i18n/index.ts) is small: a bundle lookup plus a `{placeholder}` interpolation function. That covers the whole requirement (the supported languages, flat key substitution, no plurals or dates), and it means one fewer dependency inside a bundle that ships to every consumer.
 
+### `zod/mini`, not full `zod`
+
+Everything the action reads from outside itself, meaning `stars-data.json` and `stargazers.json` on the data branch, GitHub's responses, the action inputs and `star-tracker.yml`, is checked against a schema before it is trusted. The action imports the functional `zod/mini` build rather than `zod`: it writes every user-facing error message itself, so it needs neither full `zod`'s method-chaining API nor its bundled English messages, and `zod/mini` adds well under half as much to the bundle. The measured numbers and the alternatives are in [ADR 0023](https://github.com/fbuireu/github-star-tracker/blob/main/docs/adr/0023-untrusted-input-is-validated-with-zod-mini.md).
+
 ### Nodemailer, with `secure` inferred from the port
 
 Nodemailer talks to any SMTP provider, so nobody is locked into a transactional-email vendor. The `secure` flag is derived from `smtp-port` rather than asked for separately (`465` means implicit TLS, anything else means STARTTLS), because the two are never independently chosen in practice and one fewer input is one fewer way to misconfigure a mailer.
@@ -94,5 +99,6 @@ Nodemailer talks to any SMTP provider, so nobody is locked into a transactional-
 
 - Minimal PAT scopes: `public_repo` is sufficient for public-only tracking
 - Ephemeral credential handling: the token is passed to `git` as a per-command header and registered as a secret, never logged or persisted
-- No sensitive data in outputs: star counts and repository names are already public
-- Stargazer data is opt-in, and stores only publicly available information
+- What leaves the runner: star counts and repository names reach the outputs, the data branch and the email. For a public repository those are public anyway; for a **private** one they are not, and wherever the data branch is readable, so are they
+- One outbound request besides GitHub and your SMTP server: the email's charts are [QuickChart](https://quickchart.io) image URLs carrying each chart's data, repository names in its title and legend included. They are fetched from quickchart.io when the email's images load, so tracking private repositories with email charts on sends their names there. Set `include-charts: false` if that matters ([ADR 0010](https://github.com/fbuireu/github-star-tracker/blob/main/docs/adr/0010-quickchart-renders-the-email-charts.md))
+- Stargazer data is opt-in, and stores only login names; since GitHub's 2026 restriction, a public data branch publishes logins that GitHub itself no longer lists publicly (see [Known Limitations](Known-Limitations#stargazer-data-privacy))

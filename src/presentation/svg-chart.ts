@@ -56,17 +56,17 @@ function straightPath(points: Point[]): string {
 	return path;
 }
 
-interface ClampParams {
+interface CurveClamp {
 	clampMinY: number;
 	clampMaxY: number;
 }
 
-interface CatmullRomPathParams {
+interface CurvePathParams {
 	points: Point[];
-	clamp: ClampParams;
+	clamp: CurveClamp;
 }
 
-function catmullRomPath({ points, clamp: { clampMinY, clampMaxY } }: CatmullRomPathParams): string {
+function catmullRomPath({ points, clamp: { clampMinY, clampMaxY } }: CurvePathParams): string {
 	const tension = CHART_TENSION.smooth;
 	let path = `M${points[0].x},${points[0].y}`;
 
@@ -184,17 +184,16 @@ function roundedStepPath({ points, radius }: RoundedStepPathParams): string {
 		path += ` L${entryX},${entryY} Q${vertex.x},${vertex.y} ${exitX},${exitY}`;
 	}
 
-	const last = points[points.length - 1];
-	path += ` L${last.x},${last.y}`;
+	const last = points.at(-1);
 
-	return path;
+	return last === undefined ? path : `${path} L${last.x},${last.y}`;
 }
 
-const CURVE_PATHS: Record<ChartCurve, (points: Point[], clamp: ClampParams) => string> = {
-	[ChartCurve.CATMULL_ROM]: (points, clamp) => catmullRomPath({ points, clamp }),
-	[ChartCurve.MONOTONE]: (points) => monotonePath(points),
-	[ChartCurve.CUBIC_BEZIER]: (points) => cubicBezierPath(points),
-	[ChartCurve.ROUNDED_STEP]: (points) => roundedStepPath({ points, radius: ROUNDED_STEP_RADIUS }),
+const CURVE_PATHS: Record<ChartCurve, (params: CurvePathParams) => string> = {
+	[ChartCurve.CATMULL_ROM]: catmullRomPath,
+	[ChartCurve.MONOTONE]: ({ points }) => monotonePath(points),
+	[ChartCurve.CUBIC_BEZIER]: ({ points }) => cubicBezierPath(points),
+	[ChartCurve.ROUNDED_STEP]: ({ points }) => roundedStepPath({ points, radius: ROUNDED_STEP_RADIUS }),
 };
 
 interface GenerateCurvePathParams {
@@ -216,7 +215,7 @@ function generateCurvePath({
 	if (points.length === 1) return `M${points[0].x},${points[0].y}`;
 	if (!smoothing) return straightPath(points);
 
-	return CURVE_PATHS[curve](points, { clampMinY, clampMaxY });
+	return CURVE_PATHS[curve]({ points, clamp: { clampMinY, clampMaxY } });
 }
 
 function calculatePathLength(points: Point[]): number {
@@ -557,7 +556,7 @@ export function renderSvgChart({ request, locale, maxPoints, range, ...style }: 
 	const spec = buildChartSpec({
 		request,
 		locale,
-		palette: resolvePalette(style.theme),
+		palette: resolvePalette(style.theme ?? CHART_DEFAULTS.theme),
 		axisLabels: AxisLabels.THINNED,
 		range,
 		maxPoints,

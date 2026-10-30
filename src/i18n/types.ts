@@ -1,8 +1,3 @@
-export interface InterpolateParams {
-	template: string;
-	params: Record<string, string | number>;
-}
-
 export interface Translations {
 	badge: {
 		totalStars: string;
@@ -10,6 +5,7 @@ export interface Translations {
 	report: {
 		title: string;
 		total: string;
+		totalStars: string;
 		change: string;
 		comparedTo: string;
 		firstRun: string;
@@ -31,6 +27,7 @@ export interface Translations {
 		byRepository: string;
 		individualRepoCharts: string;
 		repoChartHeading: string;
+		repoChartTitle: string;
 		trendLine: string;
 		badges: {
 			new: string;
@@ -40,11 +37,6 @@ export interface Translations {
 		subject: string;
 		subjectLine: string;
 		defaultFrom: string;
-	};
-	trends: {
-		up: string;
-		down: string;
-		stable: string;
 	};
 	velocity: {
 		sectionTitle: string;
@@ -66,14 +58,12 @@ export interface Translations {
 	};
 	forecast: {
 		sectionTitle: string;
-		predictedStars: string;
 		week: string;
 		linearRegression: string;
 		weightedMovingAverage: string;
 		aggregate: string;
 		byRepository: string;
-		insufficientData: string;
+		repoChartTitle: string;
 		method: string;
-		predicted: string;
 	};
 }

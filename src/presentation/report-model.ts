@@ -4,7 +4,7 @@ import type { StargazerDiffEntry } from "@domain/stargazers";
 import type { History, RepoResult, Summary } from "@domain/types";
 import { computeVelocity, type VelocityMetrics } from "@domain/velocity";
 import type { Translations } from "@i18n";
-import { MIN_SNAPSHOTS_FOR_CHART } from "./constants";
+import { isPlottable } from "./chart-spec";
 import type { ReportParams } from "./shared";
 import {
 	buildForecastWeekHeaders,
@@ -15,7 +15,7 @@ import {
 } from "./shared";
 import type { PerRepoChart, PerRepoForecast, TopRepo } from "./types";
 
-export type { PerRepoChart, PerRepoForecast, TopRepo };
+export type { TopRepo };
 
 export const StargazerOutcome = {
 	NEW: "new",
@@ -24,23 +24,23 @@ export const StargazerOutcome = {
 
 export type StargazerOutcome = (typeof StargazerOutcome)[keyof typeof StargazerOutcome];
 
-export interface StargazerSection {
+interface StargazerSection {
 	outcome: StargazerOutcome;
 	totalNew: number;
 	entries: StargazerDiffEntry[];
 	sampledRepos: string[];
 }
 
-export interface VelocitySection {
+interface VelocitySection {
 	starsPerDay: number;
 	growthPercent: number | null;
-	projection: { days: number; milestone: number } | null;
+	nextMilestone: { days: number; milestone: number } | null;
 }
 
 export interface ReportModel {
 	summary: Summary;
 	now: string;
-	prev: string;
+	baselineSnapshotDate: string;
 	generatedAt: string;
 	isFirstRun: boolean;
 	sorted: RepoResult[];
@@ -90,7 +90,7 @@ function toVelocitySection(metrics: VelocityMetrics | null): VelocitySection | n
 	return {
 		starsPerDay: metrics.starsPerDay,
 		growthPercent: metrics.growthPercent,
-		projection:
+		nextMilestone:
 			metrics.nextMilestone !== null && metrics.daysToNextMilestone !== null
 				? { days: metrics.daysToNextMilestone, milestone: metrics.nextMilestone }
 				: null,
@@ -101,7 +101,7 @@ export function buildReportModel(params: ReportParams): ReportModel {
 	const {
 		config,
 		results,
-		previousTimestamp,
+		baselineSnapshotTimestamp,
 		history = null,
 		velocityHistory = null,
 		forecastData = null,
@@ -117,17 +117,17 @@ export function buildReportModel(params: ReportParams): ReportModel {
 		newRepos,
 		removedRepos,
 		now: reportDate,
-		prev,
+		baselineSnapshotDate,
 		isFirstRun,
 		generatedAt,
 	} = prepareReportData({
 		results,
-		previousTimestamp,
+		baselineSnapshotTimestamp,
 		locale,
 		now,
 	});
-	const hasChartHistory = includeCharts && history !== null && history.snapshots.length >= MIN_SNAPSHOTS_FOR_CHART;
-	const velocity = velocityMetrics && velocityHistory !== null ? computeVelocity({ history: velocityHistory }) : null;
+	const hasChartHistory = includeCharts && history !== null && isPlottable(history);
+	const velocity = velocityMetrics && velocityHistory !== null ? computeVelocity(velocityHistory) : null;
 
 	const topRepos = toTopRepos({ repos: results.repos, ranked: sorted, limit: topReposCount });
 	const chartHistory = hasChartHistory ? history : null;
@@ -152,7 +152,7 @@ export function buildReportModel(params: ReportParams): ReportModel {
 	return {
 		summary: results.summary,
 		now: reportDate,
-		prev,
+		baselineSnapshotDate,
 		generatedAt,
 		isFirstRun,
 		sorted,

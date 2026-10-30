@@ -3,11 +3,11 @@ import * as core from "@actions/core";
 import { CompareAgainst, NotificationMode } from "@domain/types";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { DEFAULTS } from "./defaults";
-import { loadConfig, loadConfigFile } from "./loader";
+import { loadConfig } from "./loader";
 import { ChartCurve, Visibility } from "./types";
 
 vi.mock("@actions/core", () => ({
-	getInput: vi.fn().mockReturnValue(""),
+	getInput: vi.fn(),
 	info: vi.fn(),
 	warning: vi.fn(),
 }));
@@ -17,8 +17,8 @@ vi.mock("node:fs", async (importOriginal) => {
 
 	return {
 		...actual,
-		existsSync: vi.fn().mockReturnValue(false),
-		readFileSync: vi.fn().mockReturnValue(""),
+		existsSync: vi.fn(),
+		readFileSync: vi.fn(),
 	};
 });
 
@@ -26,16 +26,17 @@ function mockInputs(inputs: Record<string, string>): void {
 	vi.mocked(core.getInput).mockImplementation((name: string) => inputs[name] ?? "");
 }
 
-describe("loadConfigFile", () => {
+describe("the config file", () => {
 	beforeEach(() => {
-		vi.clearAllMocks();
+		vi.resetAllMocks();
 		vi.mocked(core.getInput).mockReturnValue("");
 		vi.mocked(fs.existsSync).mockReturnValue(false);
 		vi.mocked(fs.readFileSync).mockReturnValue("");
 	});
 
-	it("returns empty object when file does not exist", () => {
-		expect(loadConfigFile("star-tracker.yml")).toEqual({});
+	it("uses the defaults, and says so, when the file does not exist", () => {
+		expect(loadConfig()).toEqual(DEFAULTS);
+		expect(core.info).toHaveBeenCalledWith("No config file found at star-tracker.yml, using defaults");
 	});
 
 	it("parses YAML config file correctly", () => {
@@ -50,7 +51,7 @@ describe("loadConfigFile", () => {
         min_stars: 5
     `);
 
-		const config = loadConfigFile("star-tracker.yml");
+		const config = loadConfig();
 
 		expect(config.visibility).toBe(Visibility.PRIVATE);
 		expect(config.includeArchived).toBe(true);
@@ -63,7 +64,7 @@ describe("loadConfigFile", () => {
 		vi.mocked(fs.existsSync).mockReturnValue(true);
 		vi.mocked(fs.readFileSync).mockReturnValue("include-charts: false\nmin-stars: 7");
 
-		const config = loadConfigFile("star-tracker.yml");
+		const config = loadConfig();
 
 		expect(config.includeCharts).toBe(false);
 		expect(config.minStars).toBe(7);
@@ -73,7 +74,7 @@ describe("loadConfigFile", () => {
 		vi.mocked(fs.existsSync).mockReturnValue(true);
 		vi.mocked(fs.readFileSync).mockReturnValue("min_stars: 5\nmin-stars: 99");
 
-		const config = loadConfigFile("star-tracker.yml");
+		const config = loadConfig();
 
 		expect(config.minStars).toBe(5);
 	});
@@ -81,27 +82,37 @@ describe("loadConfigFile", () => {
 	it("handles empty YAML file", () => {
 		vi.mocked(fs.existsSync).mockReturnValue(true);
 		vi.mocked(fs.readFileSync).mockReturnValue("");
-		expect(loadConfigFile("star-tracker.yml")).toEqual({});
+		expect(loadConfig()).toEqual(DEFAULTS);
 	});
 
 	it("handles a whitespace-only YAML file", () => {
 		vi.mocked(fs.existsSync).mockReturnValue(true);
 		vi.mocked(fs.readFileSync).mockReturnValue("   \n  \n");
-		expect(loadConfigFile("star-tracker.yml")).toEqual({});
+		expect(loadConfig()).toEqual(DEFAULTS);
 	});
 
-	it("returns empty object and warns on malformed YAML", () => {
+	it.each([
+		{ label: "a list", contents: "- visibility\n- private" },
+		{ label: "a scalar", contents: "private" },
+	])("ignores a config file whose top level is $label", ({ contents }) => {
+		vi.mocked(fs.existsSync).mockReturnValue(true);
+		vi.mocked(fs.readFileSync).mockReturnValue(contents);
+
+		expect(loadConfig()).toEqual(DEFAULTS);
+	});
+
+	it("uses the defaults and warns on malformed YAML", () => {
 		vi.mocked(fs.existsSync).mockReturnValue(true);
 		vi.mocked(fs.readFileSync).mockReturnValue('visibility: "public"\n  bad: : :');
 
-		expect(loadConfigFile("star-tracker.yml")).toEqual({});
+		expect(loadConfig()).toEqual(DEFAULTS);
 		expect(core.warning).toHaveBeenCalledWith(expect.stringContaining("Failed to parse config file"));
 	});
 });
 
 describe("loadConfig", () => {
 	beforeEach(() => {
-		vi.clearAllMocks();
+		vi.resetAllMocks();
 		vi.mocked(core.getInput).mockReturnValue("");
 		vi.mocked(fs.existsSync).mockReturnValue(false);
 		vi.mocked(fs.readFileSync).mockReturnValue("");
@@ -142,7 +153,37 @@ describe("loadConfig", () => {
 		expect(() => loadConfig()).toThrow(/Invalid visibility "toString"/);
 	});
 
-	it("lets config file values win over built-in defaults for every overridable key", () => {
+	it("throws on a visibility in the config file that is not a string", () => {
+		vi.mocked(fs.existsSync).mockReturnValue(true);
+		vi.mocked(fs.readFileSync).mockReturnValue("visibility: 5");
+
+		expect(() => loadConfig()).toThrow('Invalid visibility "5". Must be one of: public, private, all, owned');
+	});
+
+	it.each([
+		{ label: "a number", contents: "data_branch: 2026", shown: "2026" },
+		{ label: "a boolean", contents: "data_branch: true", shown: "true" },
+		{ label: "a list", contents: "data_branch:\n- stars", shown: '["stars"]' },
+	])("throws a readable error on a data_branch that is $label", ({ contents, shown }) => {
+		vi.mocked(fs.existsSync).mockReturnValue(true);
+		vi.mocked(fs.readFileSync).mockReturnValue(contents);
+
+		expect(() => loadConfig()).toThrow(
+			`Invalid data-branch ${shown} in the config file. It must be a string, so quote it in the config file.`,
+		);
+	});
+
+	it("warns and falls back on an enum in the config file that is not a string", () => {
+		vi.mocked(fs.existsSync).mockReturnValue(true);
+		vi.mocked(fs.readFileSync).mockReturnValue("locale: 5");
+
+		expect(loadConfig().locale).toBe(DEFAULTS.locale);
+		expect(core.warning).toHaveBeenCalledWith(
+			'Invalid locale "5". Must be "en", "es", "ca", or "it". Falling back to "en"',
+		);
+	});
+
+	it("lets config file values win over built-in defaults", () => {
 		vi.mocked(fs.existsSync).mockReturnValue(true);
 		vi.mocked(fs.readFileSync).mockReturnValue(
 			[
@@ -243,7 +284,6 @@ describe("loadConfig", () => {
 		vi.mocked(fs.existsSync).mockReturnValue(true);
 		vi.mocked(fs.readFileSync).mockReturnValue("chart_line_color: 123456");
 
-		expect(() => loadConfig()).not.toThrow();
 		expect(loadConfig().chartLineColor).toBe(DEFAULTS.chartLineColor);
 	});
 
@@ -377,19 +417,6 @@ describe("loadConfig", () => {
 		const config = loadConfig();
 
 		expect(config.chartLineWidth).toBe(DEFAULTS.chartLineWidth);
-	});
-
-	it("reads every config file key, including ones without dedicated tests", () => {
-		vi.mocked(fs.existsSync).mockReturnValue(true);
-		vi.mocked(fs.readFileSync).mockReturnValue(
-			["chart_y_axis_side: right", "smart_sampling_pages: 7", "chart_begin_at_zero: true"].join("\n"),
-		);
-
-		const config = loadConfig();
-
-		expect(config.chartYAxisSide).toBe("right");
-		expect(config.smartSamplingPages).toBe(7);
-		expect(config.chartBeginAtZero).toBe(true);
 	});
 
 	it("parses notification-threshold as number", () => {
@@ -774,6 +801,20 @@ describe("loadConfig", () => {
 		expect(config.chartCustomMilestones).toEqual([100, 300]);
 	});
 
+	it("reads chart-custom-milestones from the config file as a single number", () => {
+		vi.mocked(fs.existsSync).mockReturnValue(true);
+		vi.mocked(fs.readFileSync).mockReturnValue("chart_custom_milestones: 1000");
+
+		expect(loadConfig().chartCustomMilestones).toEqual([1000]);
+	});
+
+	it("ignores chart-custom-milestones in the config file when it is neither a list, a string nor a number", () => {
+		vi.mocked(fs.existsSync).mockReturnValue(true);
+		vi.mocked(fs.readFileSync).mockReturnValue("chart_custom_milestones:\n  first: 100");
+
+		expect(loadConfig().chartCustomMilestones).toEqual(DEFAULTS.chartCustomMilestones);
+	});
+
 	it("warns and falls back when chart-custom-milestones input has no valid numbers", () => {
 		mockInputs({ "chart-custom-milestones": "abc, -5, 0" });
 
@@ -813,10 +854,7 @@ describe("loadConfig", () => {
 	});
 
 	it("parses chart-curve input as rounded-step", () => {
-		vi.mocked(core.getInput).mockImplementation((name: string) => {
-			if (name === "chart-curve") return ChartCurve.ROUNDED_STEP;
-			return "";
-		});
+		mockInputs({ "chart-curve": ChartCurve.ROUNDED_STEP });
 
 		const config = loadConfig();
 
@@ -874,15 +912,6 @@ describe("loadConfig", () => {
 		expect(config.trackStargazers).toBe(true);
 	});
 
-	it("reads track_stargazers from config file", () => {
-		vi.mocked(fs.existsSync).mockReturnValue(true);
-		vi.mocked(fs.readFileSync).mockReturnValue("track_stargazers: true");
-
-		const config = loadConfig();
-
-		expect(config.trackStargazers).toBe(true);
-	});
-
 	it("defaults smart sampling options", () => {
 		const config = loadConfig();
 
@@ -903,18 +932,5 @@ describe("loadConfig", () => {
 		expect(config.smartSampling).toBe(true);
 		expect(config.smartSamplingThreshold).toBe(5000);
 		expect(config.smartSamplingPages).toBe(10);
-	});
-
-	it("reads smart_sampling options from config file", () => {
-		vi.mocked(fs.existsSync).mockReturnValue(true);
-		vi.mocked(fs.readFileSync).mockReturnValue(
-			"smart_sampling: true\nsmart_sampling_threshold: 2000\nsmart_sampling_pages: 15",
-		);
-
-		const config = loadConfig();
-
-		expect(config.smartSampling).toBe(true);
-		expect(config.smartSamplingThreshold).toBe(2000);
-		expect(config.smartSamplingPages).toBe(15);
 	});
 });

@@ -17,23 +17,24 @@ GitHub Star Tracker is a GitHub Action that monitors star counts across all your
 
 ## Quick Navigation
 
-| Page | Description |
-|------|-------------|
-| [Getting Started](Getting-Started) | Token setup, first workflow, first run |
-| [How It Works](How-It-Works) | Execution flow, data pipeline, phase by phase |
-| [Architecture](Architecture) | DDD(ish) layers, how much DDD and where it stops |
-| [Technical Stack](Technical-Stack) | Why these tools and these dependencies |
-| [Personal Access Token (PAT)](<Personal-Access-Token-(PAT)>) | Classic & fine-grained token creation |
-| [Configuration](Configuration) | All available options, file-based config, precedence |
-| [API Reference](API-Reference) | Complete inputs, outputs, and data formats |
-| [Examples](Examples) | Real-world workflows and advanced recipes |
-| [Star Trend Charts](Star-Trend-Charts) | SVG charts, QuickChart URLs, chart types |
-| [Email Notifications](Email-Notifications) | Built-in SMTP and external action setup |
-| [Viewing Reports](Viewing-Reports) | Data branch, badges, action outputs |
-| [Data Management](Data-Management) | Snapshots, history rotation, generated files |
-| [Internationalization (i18n)](<Internationalization-(i18n)>) | Multi-language support (en, es, ca, it) |
-| [Known Limitations](Known-Limitations) | Technical constraints and design trade-offs |
-| [Troubleshooting](Troubleshooting) | Common issues and solutions |
+| Page                                                         | Description                                                                 |
+| ------------------------------------------------------------ | --------------------------------------------------------------------------- |
+| [Getting Started](Getting-Started)                           | Token setup, first workflow, first run                                      |
+| [How It Works](How-It-Works)                                 | Execution flow, data pipeline, phase by phase                               |
+| [Architecture](Architecture)                                 | DDD(ish) layers, how much DDD and where it stops                            |
+| [Technical Stack](Technical-Stack)                           | Why these tools and these dependencies                                      |
+| [Personal Access Token (PAT)](<Personal-Access-Token-(PAT)>) | Classic & fine-grained token creation                                       |
+| [Configuration](Configuration)                               | All available options, file-based config, precedence                        |
+| [API Reference](API-Reference)                               | Complete inputs, outputs, and data formats                                  |
+| [Examples](Examples)                                         | Real-world workflows and advanced recipes                                   |
+| [Star Trend Charts](Star-Trend-Charts)                       | SVG charts, QuickChart URLs, chart types                                    |
+| [Email Notifications](Email-Notifications)                   | Built-in SMTP and external action setup                                     |
+| [Viewing Reports](Viewing-Reports)                           | Data branch, badges, action outputs                                         |
+| [Data Management](Data-Management)                           | Snapshots, history rotation, generated files                                |
+| [Internationalization (i18n)](<Internationalization-(i18n)>) | Multi-language support (en, es, ca, it)                                     |
+| [Known Limitations](Known-Limitations)                       | Technical constraints and design trade-offs                                 |
+| [Troubleshooting](Troubleshooting)                           | Common issues and solutions                                                 |
+| [CI/CD](CI-CD)                                               | For contributors: how this repository checks, releases and publishes itself |
 
 ---
 
@@ -50,7 +51,7 @@ One step, one secret:
 > [!NOTE]
 > `STAR_TRACKER_TOKEN` must be a [Personal Access Token](<Personal-Access-Token-(PAT)>) with `repo` or `public_repo` scope. The default `GITHUB_TOKEN` is not sufficient: it cannot list repositories outside the repository that triggered the run.
 
-The action pushes to the data branch with that same token, so the workflow itself needs no `permissions: contents: write` grant.
+The job still needs `permissions: contents: write`: with `actions/checkout`'s default `persist-credentials: true`, git pushes the data branch with the workflow's `GITHUB_TOKEN`, and falls back to `github-token` only when checkout persisted nothing.
 
 See **[Getting Started](Getting-Started)** for the full walkthrough: the complete workflow file, the first run, and what lands on the data branch.
 

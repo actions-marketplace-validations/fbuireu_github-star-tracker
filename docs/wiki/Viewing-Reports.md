@@ -19,7 +19,7 @@ Navigate to:
 https://github.com/YOUR_USER/YOUR_REPO/tree/star-tracker-data
 ```
 
-GitHub automatically renders [`README.md`](https://github.com/fbuireu/github-star-tracker/blob/main/README.md) with all charts visible.
+GitHub automatically renders the branch's `README.md`, the report, with all charts visible.
 
 > [!NOTE]
 > That `README.md` is the report, rewritten in full on every run. Editing it by hand is safe but pointless:
@@ -74,19 +74,19 @@ Access data in subsequent workflow steps for custom integrations.
 
 ### Available Outputs
 
-| Output | Description |
-|---|---|
-| `lost-stars` | Stars lost against the comparison baseline (per run, not cumulative) |
-| `new-stargazers` | New stargazers detected against the stored stargazer list, which every writing run rewrites - not affected by `compare-against` |
-| `new-stars` | Stars gained against the comparison baseline (per run, not cumulative) |
-| `notification-sent` | Whether an email was actually delivered (false when SMTP is unconfigured, `email-to` is empty, or the send failed). A `send-on-no-changes` email sets it `true` even though `should-notify` is `false` |
-| `report` | Full Markdown report |
-| `report-csv` | CSV report of the run |
-| `report-html` | HTML report (for email) |
-| `report-html-path` | File path to the HTML report (for large reports / custom mailers). Written on **every** run, including read-only ones and runs where no repository matched, and written outside the data branch so it never reaches a commit |
-| `should-notify` | Whether the notification threshold was reached (cumulative across runs) |
-| `stars-changed` | Whether stars changed against the comparison baseline (`true`/`false`) |
-| `total-stars` | Total star count |
+| Output              | Description                                                                                                                                                                                                                  |
+| ------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `lost-stars`        | Stars lost against the comparison baseline (per run, not cumulative)                                                                                                                                                         |
+| `new-stargazers`    | New stargazers detected against the stored stargazer list, which every writing run rewrites - not affected by `compare-against`                                                                                              |
+| `new-stars`         | Stars gained against the comparison baseline (per run, not cumulative)                                                                                                                                                       |
+| `notification-sent` | Whether an email was actually delivered (false when SMTP is unconfigured, `email-to` is empty, or the send failed). A `send-on-no-changes` email sets it `true` even though `should-notify` is `false`                       |
+| `report`            | Full Markdown report                                                                                                                                                                                                         |
+| `report-csv`        | CSV report of the run                                                                                                                                                                                                        |
+| `report-html`       | HTML report (for email)                                                                                                                                                                                                      |
+| `report-html-path`  | File path to the HTML report (for large reports / custom mailers). Written on **every** run, including read-only ones and runs where no repository matched, and written outside the data branch so it never reaches a commit |
+| `should-notify`     | Whether the notification threshold was reached (cumulative across runs)                                                                                                                                                      |
+| `stars-changed`     | Whether stars changed against the comparison baseline (`true`/`false`)                                                                                                                                                       |
+| `total-stars`       | Total star count                                                                                                                                                                                                             |
 
 > [!NOTE]
 > The comparison baseline is the previous run by default, and [`compare-against`](Configuration#compare-against) can move it to 24h, 7d or 30d ago. `new-stars` and `lost-stars` describe a single run and carry no memory of whether a notification was sent - gate recurring emails on `should-notify`, which accumulates until it fires. See **[Email Notifications](Email-Notifications)**.
@@ -137,8 +137,10 @@ git clone -b star-tracker-data --single-branch \
 
 ```bash
 curl -s https://raw.githubusercontent.com/YOUR_USER/YOUR_REPO/star-tracker-data/stars-data.json \
-  | jq '.snapshots[0].totalStars'
+  | jq '.snapshots[-1].totalStars'
 ```
+
+Snapshots are appended, so `.snapshots[-1]` is the newest and `.snapshots[0]` the oldest one `max-history` still keeps.
 
 ---
 

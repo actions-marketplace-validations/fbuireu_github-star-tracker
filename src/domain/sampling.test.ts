@@ -1,13 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { MAX_REACHABLE_STARGAZERS } from "./constants";
-import {
-	coveredStars,
-	MAX_REACHABLE_PAGE,
-	reachablePages,
-	STARGAZER_PAGE_SIZE,
-	sampledPages,
-	shouldSample,
-} from "./sampling";
+import { coveredStars, MAX_REACHABLE_PAGE, STARGAZER_PAGE_SIZE, sampledPages, shouldSample } from "./sampling";
 
 describe("shouldSample", () => {
 	it("samples only above the threshold, and only when smart sampling is on", () => {
@@ -21,24 +14,25 @@ describe("shouldSample", () => {
 	});
 });
 
-describe("reachablePages", () => {
+describe("sampledPages", () => {
 	it("always offers at least one page, even for a repository with no stars", () => {
-		expect(reachablePages(0)).toBe(1);
-		expect(reachablePages(1)).toBe(1);
+		expect(sampledPages({ totalStars: 0, maxPages: 10 })).toEqual([1]);
+		expect(sampledPages({ totalStars: 1, maxPages: 10 })).toEqual([1]);
 	});
 
 	it("rounds a partial page up", () => {
-		expect(reachablePages(101)).toBe(2);
-		expect(reachablePages(200)).toBe(2);
+		expect(sampledPages({ totalStars: 101, maxPages: 10 })).toEqual([1, 2]);
+		expect(sampledPages({ totalStars: 200, maxPages: 10 })).toEqual([1, 2]);
 	});
 
 	it("stops at the paging ceiling GitHub enforces", () => {
-		expect(reachablePages(MAX_REACHABLE_STARGAZERS * 10)).toBe(MAX_REACHABLE_PAGE);
+		const pages = sampledPages({ totalStars: MAX_REACHABLE_STARGAZERS * 10, maxPages: MAX_REACHABLE_PAGE * 2 });
+
+		expect(pages).toHaveLength(MAX_REACHABLE_PAGE);
+		expect(pages.at(-1)).toBe(MAX_REACHABLE_PAGE);
 		expect(MAX_REACHABLE_PAGE).toBe(MAX_REACHABLE_STARGAZERS / STARGAZER_PAGE_SIZE);
 	});
-});
 
-describe("sampledPages", () => {
 	it("reads every page when the repository has fewer than the budget", () => {
 		expect(sampledPages({ totalStars: 250, maxPages: 10 })).toEqual([1, 2, 3]);
 	});
@@ -57,15 +51,14 @@ describe("sampledPages", () => {
 
 		expect(pages).toEqual([1, 4, 7, 10]);
 		expect(pages[0]).toBe(1);
-		expect(pages.at(-1)).toBe(reachablePages(1000));
+		expect(pages.at(-1)).toBe(1000 / STARGAZER_PAGE_SIZE);
 	});
 
-	it("returns pages in ascending order with no duplicates when rounding collides", () => {
-		const pages = sampledPages({ totalStars: 300, maxPages: 5 });
+	it("spends the whole budget on distinct ascending pages when the range is barely wider than it", () => {
+		const pages = sampledPages({ totalStars: 1100, maxPages: 10 });
 
-		expect(pages).toEqual([...new Set(pages)]);
-		expect(pages).toEqual([...pages].sort((earlier, later) => earlier - later));
-		expect(pages.at(-1)).toBe(3);
+		expect(pages).toEqual([1, 2, 3, 4, 5, 7, 8, 9, 10, 11]);
+		expect(new Set(pages).size).toBe(10);
 	});
 
 	it("never asks for a page beyond the paging ceiling", () => {

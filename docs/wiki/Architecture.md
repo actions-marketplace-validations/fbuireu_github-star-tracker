@@ -1,11 +1,12 @@
 # Architecture
 
-The action follows a **Domain-Driven Design<sub>(ish)</sub>** layering with a **Functional Core, Imperative Shell** pattern: the domain is pure, one ubiquitous language spans the whole tree, and each layer documents its own rules in a colocated `CLAUDE.md`. The dependency direction is strict and enumerated rather than conventional: the core knows nothing about GitHub, git, the filesystem or SMTP, and everything points inward toward it.
+The action follows a **Domain-Driven Design<sub>(ish)</sub>** layering with a **Functional Core, Imperative Shell** pattern: the domain is pure, one ubiquitous language spans the whole tree, how code is written is one [`CODING_STANDARDS.md`](https://github.com/fbuireu/github-star-tracker/blob/main/CODING_STANDARDS.md), and each layer documents what it does in a colocated `AGENTS.md`. The dependency direction is strict and enumerated rather than conventional: the core knows nothing about GitHub, git, the filesystem or SMTP, and everything points inward toward it.
 
 ```mermaid
 ---
 config:
   look: handDrawn
+  layout: dagre
 ---
 flowchart RL
     entry["index.ts"] --> application
@@ -23,26 +24,35 @@ flowchart RL
     presentation --> domain
     presentation --> i18n
     domain --> i18n
+    application --> shared
+    config --> shared
+    infrastructure --> shared
+    shared -.->|test fixtures only| config
+    shared -.->|test fixtures only| domain
 ```
 
-Every arrow above is an import some layer really makes; anything not drawn is forbidden.
+Every arrow above is an import a layer is allowed to make, whether or not its source makes it; anything not drawn is
+forbidden, bar the test exceptions
+[`ARCHITECTURE.md`](https://github.com/fbuireu/github-star-tracker/blob/main/ARCHITECTURE.md#1-layer-map) names. The
+two dashed arrows are the fixture factories in `shared/tests`, which read `DEFAULTS` and the `Config` and domain types
+and are imported by `*.test.ts` files only.
 
-Each layer documents its own rules in a colocated `CLAUDE.md`.
+Each layer documents what it does, and what bites while changing it, in a colocated `AGENTS.md`; the rules for how code is written anywhere in the tree are [`CODING_STANDARDS.md`](https://github.com/fbuireu/github-star-tracker/blob/main/CODING_STANDARDS.md).
 
 ---
 
 ## Layers
 
-| Layer | Role | Side effect |
-|---|---|---|
-| **`index.ts`** | Calls `trackStars()` at module load | Starts the run |
-| **domain** | Pure business core: comparison, snapshots, the Tracked Set, forecast, velocity, stargazer diffing, star-history reconstruction, formatting | None |
-| **presentation** | Pure rendering: data in, markdown / HTML / SVG / CSV / badge string out | None |
-| **i18n** | Locale bundles and interpolation. A true leaf: it imports no other layer, only its own JSON | None |
-| **config** | Action inputs plus `star-tracker.yml` resolved into one typed `Config` | Reads the inputs and one YAML file |
-| **infrastructure** | Everything outbound: the GitHub REST API, the `git` CLI, the Data Branch worktree, SMTP | Network, `child_process`, filesystem |
-| **application** | Sequences the single use case, `trackStars()` | Writes the Action log and the action outputs |
-| **shared** | Cross-cutting test fixtures, used from `*.test.ts` only | None |
+| Layer              | Role                                                                                                                                       | Side effect                                  |
+| ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------ | -------------------------------------------- |
+| **`index.ts`**     | Calls `trackStars()` at module load                                                                                                        | Starts the run                               |
+| **domain**         | Pure business core: comparison, snapshots, the Tracked Set, forecast, velocity, stargazer diffing, star-history reconstruction, formatting | None                                         |
+| **presentation**   | Pure rendering: data in, markdown / HTML / SVG / CSV / badge string out                                                                    | None                                         |
+| **i18n**           | Locale bundles and interpolation. A true leaf: it imports no other layer, only its own JSON                                                | None                                         |
+| **config**         | Action inputs plus `star-tracker.yml` resolved into one typed `Config`                                                                     | Reads the inputs and one YAML file           |
+| **infrastructure** | Everything outbound: the GitHub REST API, the `git` CLI, the Data Branch worktree, SMTP                                                    | Network, `child_process`, filesystem         |
+| **application**    | Sequences the single use case, `trackStars()`                                                                                              | Writes the Action log and the action outputs |
+| **shared**         | Cross-cutting code no layer owns: `errorMessage` and the schema-issue wording, plus the test fixtures used from `*.test.ts` only           | None                                         |
 
 `assets/` sits beside them and is not a layer: it holds the brand files the README embeds, imports nothing and is imported by nothing.
 
@@ -56,7 +66,7 @@ The **strategic** half does the real work and is taken whole. The **tactical** h
 
 The strategic ideas the design leans on:
 
-One ubiquitous language. [`CONTEXT.md`](https://github.com/fbuireu/github-star-tracker/blob/main/CONTEXT.md) defines every domain word (Snapshot, Baseline Snapshot, Delta, Tracked Set, Covered Stars, Delivery) and, for each, lists the synonyms it displaces, so a near-miss word cannot drift in. A term means the same thing in the star mathematics, in a chart title, in an email and on this page.
+One ubiquitous language. [`GLOSSARY.md`](https://github.com/fbuireu/github-star-tracker/blob/main/GLOSSARY.md) defines every domain word (Snapshot, Baseline Snapshot, Delta, Tracked Set, Covered Stars, Delivery) and, for each, lists the synonyms it displaces, so a near-miss word cannot drift in. A term means the same thing in the star mathematics, in a chart title, in an email and on this page.
 
 A domain that performs no I/O: `domain`, `presentation` and `i18n` reach no network, no filesystem and no clock beyond an injectable `now`, which is what lets the arithmetic and every rendered artefact be exercised on plain values with no GitHub API, git or SMTP anywhere near the test.
 
@@ -70,12 +80,13 @@ Neither half of that is a matter of taste. The boundaries are asserted by a test
 
 This page is the shape, not the rules. The normative statement of which layer may import which is the layer table in [`ARCHITECTURE.md`](https://github.com/fbuireu/github-star-tracker/blob/main/ARCHITECTURE.md), and a test reads that table as data and asserts it against every import in `src`, so the arrows above cannot quietly stop being true. Restating the import rules here would be another copy that nothing checks.
 
-| Question | Where |
-|---|---|
-| What does this domain word mean, and what does it displace? | [`CONTEXT.md`](https://github.com/fbuireu/github-star-tracker/blob/main/CONTEXT.md) |
-| Which layer may import which, and what runs in what order? | [`ARCHITECTURE.md`](https://github.com/fbuireu/github-star-tracker/blob/main/ARCHITECTURE.md) |
-| Why is the tree layered at all, and what did the `(ish)` drop? | [ADR 0004](https://github.com/fbuireu/github-star-tracker/blob/main/docs/adr/0004-layered-source-structure.md) |
-| When does a bare `string` or `number` earn a type of its own? | [ADR 0022](https://github.com/fbuireu/github-star-tracker/blob/main/docs/adr/0022-a-concept-earns-a-type-when-it-crosses-a-boundary.md) |
-| What does one layer actually guarantee? | The `CLAUDE.md` inside that layer's folder |
-| What happens, step by step, on a run? | [How It Works](How-It-Works) |
-| Why these tools and these dependencies? | [Technical Stack](Technical-Stack) |
+| Question                                                           | Where                                                                                                                                   |
+| ------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------- |
+| What does this domain word mean, and what does it displace?        | [`GLOSSARY.md`](https://github.com/fbuireu/github-star-tracker/blob/main/GLOSSARY.md)                                                   |
+| Which layer may import which, and what runs in what order?         | [`ARCHITECTURE.md`](https://github.com/fbuireu/github-star-tracker/blob/main/ARCHITECTURE.md)                                           |
+| Why is the tree layered at all, and what did the `(ish)` drop?     | [ADR 0004](https://github.com/fbuireu/github-star-tracker/blob/main/docs/adr/0004-layered-source-structure.md)                          |
+| When does a bare `string` or `number` earn a type of its own?      | [ADR 0022](https://github.com/fbuireu/github-star-tracker/blob/main/docs/adr/0022-a-concept-earns-a-type-when-it-crosses-a-boundary.md) |
+| What does one layer actually guarantee?                            | The `AGENTS.md` inside that layer's folder                                                                                              |
+| How is code written here, and what does a review hold a change to? | [`CODING_STANDARDS.md`](https://github.com/fbuireu/github-star-tracker/blob/main/CODING_STANDARDS.md)                                   |
+| What happens, step by step, on a run?                              | [How It Works](How-It-Works)                                                                                                            |
+| Why these tools and these dependencies?                            | [Technical Stack](Technical-Stack)                                                                                                      |

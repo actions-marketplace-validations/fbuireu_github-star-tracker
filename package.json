@@ -1,6 +1,6 @@
 {
 	"name": "github-star-tracker",
-	"version": "1.27.4",
+	"version": "1.28.8",
 	"private": true,
 	"description": "GitHub Action that tracks star counts across your repositories: charts, badges, reports and email notifications when they change",
 	"keywords": [
@@ -28,9 +28,9 @@
 		"url": "https://github.com/fbuireu/github-star-tracker/issues"
 	},
 	"engines": {
-		"node": "26.2.0"
+		"node": "26.7.0"
 	},
-	"packageManager": "pnpm@12.4.1",
+	"packageManager": "pnpm@12.15.0",
 	"scripts": {
 		"prepare": "husky",
 		"build": "tsx esbuild.config.ts",
@@ -50,36 +50,37 @@
 		"test:docs": "pnpm test:ut docs/docs-consistency.test.ts",
 		"verify:static": "pnpm format:check && pnpm typecheck && pnpm build",
 		"verify": "pnpm verify:static && pnpm test:ut:coverage",
-		"verify:changed": "pnpm verify:static && pnpm test:ut:changed"
+		"verify:changed": "pnpm verify:static && pnpm test:ut:changed && pnpm test:docs"
 	},
 	"dependencies": {
 		"@actions/core": "3.0.1",
 		"@actions/github": "9.1.1",
 		"@octokit/plugin-retry": "8.1.1",
-		"js-yaml": "5.4.1",
-		"nodemailer": "10.0.8"
+		"js-yaml": "5.5.0",
+		"nodemailer": "10.2.0",
+		"zod": "4.6.7"
 	},
 	"devDependencies": {
-		"@biomejs/biome": "2.5.13",
-		"@commitlint/cli": "21.2.2",
-		"@commitlint/config-conventional": "21.2.2",
-		"@commitlint/format": "21.2.2",
-		"@commitlint/types": "21.2.0",
+		"@biomejs/biome": "2.6.2",
+		"@commitlint/cli": "21.2.4",
+		"@commitlint/config-conventional": "21.2.4",
+		"@commitlint/format": "21.2.3",
+		"@commitlint/types": "21.2.3",
 		"@semantic-release/changelog": "7.0.0",
 		"@semantic-release/commit-analyzer": "13.0.1",
 		"@semantic-release/git": "11.0.1",
-		"@semantic-release/github": "12.0.9",
-		"@semantic-release/npm": "13.1.5",
+		"@semantic-release/github": "12.0.10",
+		"@semantic-release/npm": "13.2.0",
 		"@semantic-release/release-notes-generator": "14.1.1",
 		"@types/js-yaml": "4.0.9",
-		"@types/node": "26.5.1",
-		"@vitest/coverage-v8": "5.0.0",
+		"@types/node": "26.6.5",
+		"@vitest/coverage-v8": "5.0.5",
 		"esbuild": "0.28.2",
 		"husky": "9.1.7",
-		"lint-staged": "17.5.1",
+		"lint-staged": "17.6.0",
 		"semantic-release": "25.0.9",
-		"tsx": "4.23.13",
+		"tsx": "4.23.15",
 		"typescript": "7.0.2",
-		"vitest": "5.0.0"
+		"vitest": "5.0.5"
 	}
 }

@@ -26,15 +26,24 @@ name: Track Stars
 
 on:
   schedule:
-    - cron: '0 0 * * *' # Daily at midnight UTC
+    - cron: "0 0 * * *" # Daily at midnight UTC
   workflow_dispatch: # Allow manual triggers
+
+permissions:
+  contents: write
+
+concurrency:
+  group: star-tracker
+  cancel-in-progress: false
 
 jobs:
   track:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
-      - uses: fbuireu/github-star-tracker@v1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Track stars
+        id: tracker
+        uses: fbuireu/github-star-tracker@v1
         with:
           github-token: ${{ secrets.STAR_TRACKER_TOKEN }}
 ```
@@ -42,7 +51,12 @@ jobs:
 That is the minimal setup: the action tracks every repository your token can see, with default settings.
 
 > [!NOTE]
-> The workflow needs no `permissions:` block. The action pushes to the data branch with `github-token` (your PAT), never with the workflow's `GITHUB_TOKEN`, so granting `contents: write` to the job changes nothing. The `actions/checkout` step only reads.
+> Keep the `contents: write` grant. `actions/checkout` persists the workflow's `GITHUB_TOKEN` in the checkout's git config by default, and git sends that credential in preference to `github-token` when the action pushes the data branch. Your PAT is what git falls back to only when the checkout step sets `persist-credentials: false`.
+
+The other two lines are not decoration either. `concurrency` makes a manual run wait for a scheduled one instead of
+overlapping it: two writing runs that overlap branch from the same data-branch commit, and the second one's push is
+refused after its email has gone out. `id: tracker` is how a later step reads the outputs, as
+`steps.tracker.outputs.<name>`.
 
 ---
 
@@ -59,11 +73,10 @@ Give the first run time. With `include-charts` on (the default) the action walks
 ### Verify It Worked
 
 After the first run:
-
 1. Go to your repository's branch selector and look for `star-tracker-data`
 2. Navigate to `https://github.com/YOUR_USER/YOUR_REPO/tree/star-tracker-data`
 3. You should see:
-   - [`README.md`](https://github.com/fbuireu/github-star-tracker/blob/main/README.md), the full Markdown report
+   - `README.md`, the full Markdown report
    - `stars-data.json`, the historical data
    - `stars-data.csv`, the same run as a flat CSV
    - [`stars-badge.svg`](https://github.com/fbuireu/github-star-tracker/blob/main/docs/examples/stars-badge.svg), the star count badge

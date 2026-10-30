@@ -1,45 +1,48 @@
-import { ChartCurve, type Config } from "@config/types";
+import { ChartCurve, ChartRange, type Config } from "@config/types";
 import { EMPTY_SUMMARY } from "@domain/comparison";
 import type { ForecastData } from "@domain/forecast";
 import { ForecastMethod, ForecastSource } from "@domain/forecast";
 import { deltaIndicator } from "@domain/formatting";
 import type { StargazerDiffResult } from "@domain/stargazers";
-import { getTranslations } from "@i18n";
+import { getTranslations, LOCALES, type Locale } from "@i18n";
 import { makeComparisonResults, makeConfig, makeMultiRepoHistory, makeRepoResult } from "@shared/tests";
 import { describe, expect, it } from "vitest";
 import type { ChartHistories } from "./charts";
 import { generateCsvReport } from "./csv";
-import { renderEmptyRun, renderRun } from "./run";
+import { type RenderedRun, renderEmptyRun, renderRun } from "./run";
 
-const STORED = makeMultiRepoHistory(
-	[
+const STORED = makeMultiRepoHistory({
+	snapshots: [
 		{ "user/repo-a": 10, "user/repo-b": 5 },
 		{ "user/repo-a": 60, "user/repo-b": 40 },
 	],
-	{ stepDays: 10 },
-);
+	stepDays: 10,
+});
 
-const RECONSTRUCTED = makeMultiRepoHistory(
-	[
+const RECONSTRUCTED = makeMultiRepoHistory({
+	snapshots: [
 		{ "user/repo-a": 20, "user/repo-b": 10 },
 		{ "user/repo-a": 40, "user/repo-b": 20 },
 		{ "user/repo-a": 60, "user/repo-b": 40 },
 	],
-	{ stepDays: 1 },
-);
+	stepDays: 30,
+});
 
 function chartHistories(aggregate = RECONSTRUCTED): ChartHistories {
 	return { aggregate, forRepo: () => aggregate, reconstructedForRepo: () => aggregate };
 }
 
-function render(config = makeConfig({ includeCharts: true, topRepos: 2 })) {
+const NOW = new Date("2026-03-04T12:00:00.000Z");
+
+function render(config = makeConfig({ includeCharts: true, topRepos: 2 })): RenderedRun {
 	return renderRun({
 		config,
 		results: makeComparisonResults(),
-		previousTimestamp: "2026-01-01T00:00:00Z",
+		baselineSnapshotTimestamp: "2026-01-01T00:00:00Z",
 		chartHistories: chartHistories(),
 		storedHistory: STORED,
 		forecastData: null,
+		now: NOW,
 	});
 }
 
@@ -47,7 +50,7 @@ describe("renderRun", () => {
 	it("returns every artefact a run publishes", () => {
 		const rendered = render();
 
-		expect(rendered.markdown).toContain("#");
+		expect(rendered.markdown).toContain("# Star Tracker Report");
 		expect(rendered.html).toContain("<!DOCTYPE html>");
 		expect(rendered.csv).toContain("repository");
 		expect(rendered.badge).toContain("<svg");
@@ -65,8 +68,8 @@ describe("renderRun", () => {
 		const rendered = render();
 		const stampIn = (report: string): string | undefined => report.match(/\d{4}-\d{2}-\d{2}T[\d:.]+Z/)?.[0];
 
-		expect(stampIn(rendered.markdown)).toBeDefined();
-		expect(stampIn(rendered.markdown)).toBe(stampIn(rendered.html));
+		expect(stampIn(rendered.markdown)).toBe(NOW.toISOString());
+		expect(stampIn(rendered.html)).toBe(NOW.toISOString());
 	});
 
 	it("dates the header and the footer from that one read, so they cannot straddle midnight", () => {
@@ -74,7 +77,7 @@ describe("renderRun", () => {
 		const rendered = renderRun({
 			config: makeConfig({ includeCharts: true, topRepos: 2 }),
 			results: makeComparisonResults(),
-			previousTimestamp: "2026-01-01T00:00:00Z",
+			baselineSnapshotTimestamp: "2026-01-01T00:00:00Z",
 			chartHistories: chartHistories(),
 			storedHistory: STORED,
 			forecastData: null,
@@ -90,25 +93,19 @@ describe("renderRun", () => {
 
 	it("measures Velocity from the stored history, never from the chart history", () => {
 		const config = makeConfig({ includeCharts: true, velocityMetrics: true });
-		const fromStored = renderRun({
+		const rendered = renderRun({
 			config,
 			results: makeComparisonResults(),
-			previousTimestamp: "2026-01-01T00:00:00Z",
+			baselineSnapshotTimestamp: "2026-01-01T00:00:00Z",
 			chartHistories: chartHistories(),
 			storedHistory: STORED,
 			forecastData: null,
-		});
-		const asIfItUsedTheChartHistory = renderRun({
-			config,
-			results: makeComparisonResults(),
-			previousTimestamp: "2026-01-01T00:00:00Z",
-			chartHistories: chartHistories(),
-			storedHistory: RECONSTRUCTED,
-			forecastData: null,
+			now: NOW,
 		});
 
-		expect(fromStored.markdown).toContain("Growth Velocity");
-		expect(fromStored.markdown).not.toBe(asIfItUsedTheChartHistory.markdown);
+		expect(rendered.markdown).toContain("**Stars per day:** 8.5");
+		expect(rendered.html).toContain("<strong>Stars per day:</strong> 8.5<");
+		expect(rendered.markdown).not.toContain("**Stars per day:** 40");
 	});
 
 	it("charts exactly the Top Repositories the Report names, with no list passed in", () => {
@@ -126,7 +123,7 @@ describe("renderRun", () => {
 		const params = {
 			config,
 			results: makeComparisonResults(),
-			previousTimestamp: "2026-01-01T00:00:00Z",
+			baselineSnapshotTimestamp: "2026-01-01T00:00:00Z",
 			storedHistory: STORED,
 			forecastData: null,
 			now: new Date("2026-03-04T12:00:00Z"),
@@ -148,7 +145,7 @@ describe("renderRun", () => {
 		const rendered = renderRun({
 			config: makeConfig({ includeCharts: true, topRepos: 2 }),
 			results: makeComparisonResults(),
-			previousTimestamp: "2026-01-01T00:00:00Z",
+			baselineSnapshotTimestamp: "2026-01-01T00:00:00Z",
 			chartHistories: {
 				aggregate: RECONSTRUCTED,
 				forRepo: () => ({ snapshots: [] }),
@@ -185,7 +182,7 @@ describe("renderRun", () => {
 		const rendered = renderRun({
 			config: makeConfig({ includeCharts: true, topRepos: 2 }),
 			results: makeComparisonResults(),
-			previousTimestamp: "2026-01-01T00:00:00Z",
+			baselineSnapshotTimestamp: "2026-01-01T00:00:00Z",
 			chartHistories: chartHistories(),
 			storedHistory: STORED,
 			forecastData,
@@ -202,7 +199,7 @@ describe("renderRun", () => {
 		const withoutTopRepos = renderRun({
 			config: makeConfig({ includeCharts: true, topRepos: 2 }),
 			results: makeComparisonResults({ repos: [] }),
-			previousTimestamp: "2026-01-01T00:00:00Z",
+			baselineSnapshotTimestamp: "2026-01-01T00:00:00Z",
 			chartHistories: chartHistories(),
 			storedHistory: STORED,
 			forecastData: null,
@@ -242,6 +239,10 @@ describe("the two Report dialects stay in step", () => {
 		},
 		repos: [],
 	};
+	const withRepoForecast: ForecastData = {
+		...forecastData,
+		repos: [{ repoFullName: "user/repo-a", source: ForecastSource.OWN, forecasts: forecastData.aggregate.forecasts }],
+	};
 	const withRemoved = makeComparisonResults({
 		repos: [
 			makeRepoResult({ name: "kept", overrides: { current: 60, delta: 10 } }),
@@ -259,6 +260,12 @@ describe("the two Report dialects stay in step", () => {
 		{ name: "stargazers", heading: t.stargazers.sectionTitle, stargazerDiff },
 		{ name: "forecast", heading: t.forecast.sectionTitle, forecastData },
 		{
+			name: "per-repo forecasts",
+			heading: t.forecast.byRepository,
+			forecastData: withRepoForecast,
+			config: makeConfig({ includeCharts: false }),
+		},
+		{
 			name: "velocity",
 			heading: t.velocity.sectionTitle,
 			config: makeConfig({ includeCharts: true, topRepos: 2, velocityMetrics: true }),
@@ -271,7 +278,7 @@ describe("the two Report dialects stay in step", () => {
 			const rendered = renderRun({
 				config: config ?? makeConfig({ includeCharts: true, topRepos: 2 }),
 				results: results ?? makeComparisonResults(),
-				previousTimestamp: "2026-01-01T00:00:00Z",
+				baselineSnapshotTimestamp: "2026-01-01T00:00:00Z",
 				chartHistories: chartHistories(),
 				storedHistory: STORED,
 				stargazerDiff: diff,
@@ -283,11 +290,74 @@ describe("the two Report dialects stay in step", () => {
 		},
 	);
 
+	const MOVEMENTS = [
+		{
+			name: "a first run",
+			results: makeComparisonResults({
+				repos: [
+					makeRepoResult({ name: "repo-a", overrides: { current: 60, previous: null, isNew: true } }),
+					makeRepoResult({ name: "repo-b", overrides: { current: 40, previous: null, isNew: true } }),
+				],
+				summary: { totalStars: 100, totalPrevious: 0, totalDelta: 0, newStars: 0, lostStars: 0, changed: true },
+			}),
+			baselineSnapshotTimestamp: null,
+		},
+		{
+			name: "a Run where nothing moved",
+			results: makeComparisonResults({
+				repos: [makeRepoResult({ name: "repo-a", overrides: { current: 60, previous: 60 } })],
+				summary: { totalStars: 60, totalPrevious: 60, totalDelta: 0, newStars: 0, lostStars: 0, changed: false },
+			}),
+			baselineSnapshotTimestamp: "2026-01-01T00:00:00Z",
+		},
+		{
+			name: "a Run whose only movement is a rename",
+			results: makeComparisonResults({
+				repos: [
+					makeRepoResult({ name: "kept", overrides: { current: 60, previous: 60 } }),
+					makeRepoResult({ name: "fresh", overrides: { current: 7, previous: null, isNew: true } }),
+					makeRepoResult({ name: "gone", overrides: { current: 0, previous: 7, delta: -7, isRemoved: true } }),
+				],
+				summary: { totalStars: 67, totalPrevious: 67, totalDelta: 0, newStars: 0, lostStars: 7, changed: true },
+			}),
+			baselineSnapshotTimestamp: "2026-01-01T00:00:00Z",
+		},
+		{
+			name: "a Run with no repositories",
+			results: makeComparisonResults({
+				repos: [],
+				summary: { totalStars: 0, totalPrevious: 0, totalDelta: 0, newStars: 0, lostStars: 0, changed: false },
+			}),
+			baselineSnapshotTimestamp: "2026-01-01T00:00:00Z",
+		},
+	];
+	const ALWAYS_PRESENT = [
+		{ name: "repository table", marker: t.report.trend },
+		{ name: "Summary", marker: t.report.starsLost },
+	];
+
+	it.each(MOVEMENTS.flatMap((movement) => ALWAYS_PRESENT.map((section) => ({ movement, section }))))(
+		"prints the $section.name in both Reports for $movement.name",
+		({ movement, section }) => {
+			const rendered = renderRun({
+				config: makeConfig({ includeCharts: false }),
+				results: movement.results,
+				baselineSnapshotTimestamp: movement.baselineSnapshotTimestamp,
+				chartHistories: chartHistories(),
+				storedHistory: STORED,
+				forecastData: null,
+			});
+
+			expect(rendered.markdown).toContain(section.marker);
+			expect(rendered.html).toContain(section.marker);
+		},
+	);
+
 	it("omits every optional section from both when the model says it is absent", () => {
 		const rendered = renderRun({
 			config: makeConfig({ includeCharts: false }),
 			results: makeComparisonResults(),
-			previousTimestamp: "2026-01-01T00:00:00Z",
+			baselineSnapshotTimestamp: "2026-01-01T00:00:00Z",
 			chartHistories: chartHistories({ snapshots: [] }),
 			storedHistory: { snapshots: [] },
 			forecastData: null,
@@ -302,6 +372,103 @@ describe("the two Report dialects stay in step", () => {
 			expect(rendered.markdown).not.toContain(heading);
 			expect(rendered.html).not.toContain(heading);
 		}
+	});
+});
+
+describe("a run speaks its locale throughout", () => {
+	const PRODUCT_NAME = "GitHub Star Tracker";
+	const MIN_FRAGMENT_LENGTH = 3;
+	const forecasts = [
+		{ method: ForecastMethod.LINEAR_REGRESSION, points: [{ weekOffset: 1, predicted: 70 }] },
+		{ method: ForecastMethod.WEIGHTED_MOVING_AVERAGE, points: [{ weekOffset: 1, predicted: 68 }] },
+	];
+	const forecastData: ForecastData = {
+		aggregate: { forecasts },
+		repos: [{ repoFullName: "user/repo-a", source: ForecastSource.OWN, forecasts }],
+	};
+	const stargazerDiff: StargazerDiffResult = {
+		totalNew: 1,
+		entries: [
+			{
+				repoFullName: "user/repo-a",
+				newStargazers: [{ login: "ada", avatarUrl: "", profileUrl: "", starredAt: "2026-01-02T00:00:00Z" }],
+			},
+		],
+		sampledRepos: ["user/huge"],
+	};
+	const results = makeComparisonResults({
+		repos: [
+			makeRepoResult({ name: "repo-a", overrides: { current: 60, delta: 10 } }),
+			makeRepoResult({ name: "repo-b", overrides: { current: 40, delta: -3 } }),
+			makeRepoResult({ name: "fresh", overrides: { current: 7, previous: null, isNew: true } }),
+			makeRepoResult({ name: "gone", overrides: { current: 0, previous: 3, delta: -3, isRemoved: true } }),
+		],
+	});
+
+	const flatten = (bundle: object): Record<string, string> =>
+		Object.fromEntries(
+			Object.entries(bundle).flatMap(([key, value]) =>
+				typeof value === "object" && value !== null
+					? Object.entries(flatten(value)).map(([leaf, text]) => [`${key}.${leaf}`, text])
+					: [[key, String(value)]],
+			),
+		);
+
+	const englishOnlyText = (locale: Locale): string[] => {
+		const translated = flatten(getTranslations(locale));
+
+		return Object.entries(flatten(getTranslations("en")))
+			.filter(([path, text]) => translated[path] !== text)
+			.flatMap(([, text]) => text.split(/\{\w+\}/))
+			.map((fragment) => fragment.trim())
+			.filter((fragment) => fragment.length >= MIN_FRAGMENT_LENGTH);
+	};
+
+	interface LeaksAnyParams {
+		text: string;
+		fragments: string[];
+	}
+
+	const leaksAny = ({ text, fragments }: LeaksAnyParams): string[] =>
+		fragments.filter((fragment) =>
+			new RegExp(`(?<![\\p{L}\\p{N}])${RegExp.escape(fragment)}(?![\\p{L}\\p{N}])`, "u").test(text),
+		);
+
+	const everythingRendered = (rendered: RenderedRun): string =>
+		[
+			rendered.markdown,
+			rendered.html,
+			rendered.badge,
+			rendered.emailSubject,
+			...rendered.charts.map((chart) => chart.svg),
+			...[...rendered.html.matchAll(/quickchart\.io\/chart\?[^"]+/g)].map((match) => decodeURIComponent(match[0])),
+		]
+			.join("\n")
+			.replaceAll(PRODUCT_NAME, "");
+
+	it("finds an English phrase standing on its own and ignores one inside a longer word", () => {
+		expect(leaksAny({ text: "a Star History b", fragments: ["Star History", "Method"] })).toEqual(["Star History"]);
+		expect(leaksAny({ text: "Totale Stelle", fragments: ["Total"] })).toEqual([]);
+	});
+
+	it.each(LOCALES.filter((locale) => locale !== "en"))("prints no English text in the %s run", (locale) => {
+		const rendered = renderRun({
+			config: makeConfig({ includeCharts: true, topRepos: 2, velocityMetrics: true, chartTrendLine: true, locale }),
+			results,
+			baselineSnapshotTimestamp: "2026-01-01T00:00:00Z",
+			chartHistories: chartHistories(),
+			storedHistory: STORED,
+			stargazerDiff,
+			forecastData,
+			now: NOW,
+		});
+		const text = everythingRendered(rendered);
+		const fragments = englishOnlyText(locale);
+
+		expect(fragments.length).toBeGreaterThan(0);
+		expect(text).toContain(getTranslations(locale).report.starTrend);
+		expect(rendered.charts.map((chart) => chart.filename)).toContain("forecast-user-repo-a.svg");
+		expect(leaksAny({ text, fragments })).toEqual([]);
 	});
 });
 
@@ -323,7 +490,7 @@ describe("renderEmptyRun", () => {
 		const rendered = renderEmptyRun(makeConfig());
 
 		expect(rendered.charts).toEqual([]);
-		expect(rendered.badge).toContain("<svg");
+		expect(rendered.badge).toContain("<title>Total Stars: \u2605 0</title>");
 	});
 });
 
@@ -341,7 +508,7 @@ describe("the Notification subject", () => {
 		const spanish = renderRun({
 			config: makeConfig({ includeCharts: true, locale: "es" }),
 			results: makeComparisonResults(),
-			previousTimestamp: "2026-01-01T00:00:00Z",
+			baselineSnapshotTimestamp: "2026-01-01T00:00:00Z",
 			chartHistories: chartHistories(),
 			storedHistory: STORED,
 			forecastData: null,
@@ -358,6 +525,7 @@ describe("both chart systems honour the options they share", () => {
 		{ name: "chart-curve", changed: { chartCurve: ChartCurve.CATMULL_ROM } },
 		{ name: "chart-show-points", changed: { chartShowPoints: false } },
 		{ name: "chart-begin-at-zero", changed: { chartBeginAtZero: true } },
+		{ name: "chart-range", changed: { chartRange: ChartRange.D30 } },
 		{ name: "chart-line-width", changed: { chartLineWidth: 7 } },
 		{ name: "chart-line-color", changed: { chartLineColor: "#6b63ff" } },
 	];
@@ -366,7 +534,7 @@ describe("both chart systems honour the options they share", () => {
 		const rendered = renderRun({
 			config: makeConfig({ includeCharts: true, topRepos: 1, ...overrides }),
 			results: makeComparisonResults(),
-			previousTimestamp: "2026-01-01T00:00:00Z",
+			baselineSnapshotTimestamp: "2026-01-01T00:00:00Z",
 			chartHistories: chartHistories(),
 			storedHistory: STORED,
 			forecastData: null,

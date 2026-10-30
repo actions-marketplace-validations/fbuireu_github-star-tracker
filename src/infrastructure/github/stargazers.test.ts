@@ -1,10 +1,10 @@
 import * as core from "@actions/core";
 import { MAX_REACHABLE_STARGAZERS } from "@domain/constants";
-import { MAX_REACHABLE_PAGE, STARGAZER_PAGE_SIZE } from "@domain/sampling";
+import { MAX_REACHABLE_PAGE, STARGAZER_PAGE_SIZE, sampledPages } from "@domain/sampling";
 import { makeConfig, makeRepoInfo } from "@shared/tests";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { fetchAllStargazers } from "./stargazers";
-import type { Octokit } from "./types";
+import type { GitHubStargazerRow, Octokit } from "./types";
 
 vi.mock("@actions/core", () => ({
 	warning: vi.fn(),
@@ -22,7 +22,10 @@ interface MakeStargazerResponseParams {
 	date?: string;
 }
 
-function makeStargazerResponse({ login, date = "2026-01-15T00:00:00Z" }: MakeStargazerResponseParams) {
+function makeStargazerResponse({
+	login,
+	date = "2026-01-15T00:00:00Z",
+}: MakeStargazerResponseParams): GitHubStargazerRow {
 	return {
 		user: {
 			login,
@@ -55,6 +58,15 @@ describe("fetchAllStargazers", () => {
 		expect(result[0].stargazers).toHaveLength(2);
 		expect(result[0].stargazers[0].login).toBe("alice");
 		expect(result[0].sampled).toBe(false);
+		expect(octokit.request).toHaveBeenCalledWith(
+			"GET /repos/{owner}/{repo}/stargazers",
+			expect.objectContaining({
+				owner: "user",
+				repo: "repo-a",
+				page: 1,
+				headers: { accept: "application/vnd.github.star+json" },
+			}),
+		);
 	});
 
 	it("handles pagination", async () => {
@@ -91,20 +103,6 @@ describe("fetchAllStargazers", () => {
 		expect(result[0].stargazers).toHaveLength(0);
 		expect(result[1].stargazers).toHaveLength(1);
 		expect(core.warning).toHaveBeenCalledWith(expect.stringContaining("Failed to fetch stargazers for user/repo-a"));
-	});
-
-	it("returns empty stargazers list for repos with no stargazers", async () => {
-		const octokit = {
-			request: vi.fn().mockResolvedValue({ data: [] }),
-		};
-
-		const result = await fetchAllStargazers({
-			octokit: octokit as unknown as Octokit,
-			repos: [makeRepoInfo({ name: "repo-a" })],
-			config: samplingOff,
-		});
-
-		expect(result[0].stargazers).toHaveLength(0);
 	});
 
 	it("keeps already-fetched pages when a later page fails mid-pagination", async () => {
@@ -249,37 +247,92 @@ describe("fetchAllStargazers", () => {
 		);
 	});
 
+	it("reads a starred_at that is not a string as an unusable date rather than failing the page", async () => {
+		const rows = [makeStargazerResponse({ login: "alice" })].map((row) => ({ ...row, starred_at: 20260115 }));
+		const octokit = {
+			request: vi.fn().mockResolvedValue({ data: rows }),
+		};
+
+		const result = await fetchAllStargazers({
+			octokit: octokit as unknown as Octokit,
+			repos: [makeRepoInfo({ name: "repo-a", stars: 1 })],
+			config: samplingOff,
+		});
+
+		expect(result[0].stargazers).toEqual([expect.objectContaining({ login: "alice", starredAt: "" })]);
+		expect(core.warning).toHaveBeenCalledWith(
+			expect.stringContaining("Stargazers for user/repo-a came back without usable starred_at dates"),
+		);
+	});
+
+	it.each([
+		{
+			label: "a row with no user",
+			data: [{ starred_at: "2026-01-15T00:00:00Z", user: null }],
+			location: "[0].user (expected object, found null)",
+		},
+		{
+			label: "a user with no login",
+			data: [{ starred_at: "2026-01-15T00:00:00Z", user: { avatar_url: "a", html_url: "h" } }],
+			location: "[0].user.login (expected string, found nothing)",
+		},
+		{
+			label: "a page that is not a list",
+			data: { message: "nope" },
+			location: "the value (expected array, found an object)",
+		},
+	])("fails the repo with a readable reason on $label", async ({ data, location }) => {
+		const octokit = {
+			request: vi.fn().mockResolvedValue({ data }),
+		};
+
+		const result = await fetchAllStargazers({
+			octokit: octokit as unknown as Octokit,
+			repos: [makeRepoInfo({ name: "repo-a", stars: 1 })],
+			config: samplingOff,
+		});
+
+		expect(result[0]).toEqual(expect.objectContaining({ stargazers: [], incomplete: true }));
+		expect(core.warning).toHaveBeenCalledWith(
+			`Failed to fetch stargazers for user/repo-a: GitHub returned a stargazer page this action cannot read: ${location}`,
+		);
+	});
+
 	it("warns when a starred repo returns an empty stargazers list", async () => {
 		const octokit = {
 			request: vi.fn().mockResolvedValue({ data: [] }),
 		};
 
-		await fetchAllStargazers({
+		const result = await fetchAllStargazers({
 			octokit: octokit as unknown as Octokit,
 			repos: [makeRepoInfo({ name: "restricted", stars: 54000 })],
 			config: samplingOff,
 		});
 
+		expect(result[0].stargazers).toEqual([]);
+		expect(result[0].incomplete).toBe(true);
 		expect(core.warning).toHaveBeenCalledWith(
 			expect.stringContaining("Stargazers for user/restricted came back empty"),
 		);
 	});
 
-	it("does not warn about an empty stargazers list for a zero-star repo", async () => {
+	it("treats an empty list for a zero-star repo as complete and does not warn", async () => {
 		const octokit = {
 			request: vi.fn().mockResolvedValue({ data: [] }),
 		};
 
-		await fetchAllStargazers({
+		const result = await fetchAllStargazers({
 			octokit: octokit as unknown as Octokit,
 			repos: [makeRepoInfo({ name: "empty", stars: 0 })],
 			config: samplingOff,
 		});
 
+		expect(result[0].stargazers).toEqual([]);
+		expect(result[0].incomplete).toBe(false);
 		expect(core.warning).not.toHaveBeenCalled();
 	});
 
-	it("samples evenly-spaced pages when stars exceed the threshold", async () => {
+	it("reads exactly the pages the sampling plan names when stars exceed the threshold", async () => {
 		const octokit = {
 			request: vi.fn().mockResolvedValue({ data: [makeStargazerResponse({ login: "alice" })] }),
 		};
@@ -294,10 +347,8 @@ describe("fetchAllStargazers", () => {
 			}),
 		});
 
-		expect(octokit.request).toHaveBeenCalledTimes(5);
 		const pages = octokit.request.mock.calls.map((call) => call[1].page);
-		expect(pages[0]).toBe(1);
-		expect(pages.at(-1)).toBe(50);
+		expect(pages).toEqual(sampledPages({ totalStars: 5000, maxPages: 5 }));
 		expect(result[0].sampled).toBe(true);
 		expect(core.info).toHaveBeenCalledWith(expect.stringContaining("Smart sampling applied"));
 	});
@@ -333,44 +384,6 @@ describe("fetchAllStargazers", () => {
 		});
 
 		expect(result[0].sampled).toBe(false);
-	});
-
-	it("falls back to fetching all pages when total pages do not exceed maxPages", async () => {
-		const octokit = {
-			request: vi.fn().mockResolvedValue({ data: [makeStargazerResponse({ login: "alice" })] }),
-		};
-
-		const result = await fetchAllStargazers({
-			octokit: octokit as unknown as Octokit,
-			repos: [makeRepoInfo({ name: "huge", stars: 2000 })],
-			config: makeConfig({
-				smartSampling: true,
-				smartSamplingThreshold: 100,
-				smartSamplingPages: 50,
-			}),
-		});
-
-		expect(octokit.request).toHaveBeenCalledTimes(20);
-		expect(result[0].sampled).toBe(true);
-	});
-
-	it("never samples a page beyond the 40,000-star reachable window", async () => {
-		const octokit = {
-			request: vi.fn().mockResolvedValue({ data: [makeStargazerResponse({ login: "alice" })] }),
-		};
-
-		await fetchAllStargazers({
-			octokit: octokit as unknown as Octokit,
-			repos: [makeRepoInfo({ name: "massive", stars: 50000 })],
-			config: makeConfig({
-				smartSampling: true,
-				smartSamplingThreshold: 1500,
-				smartSamplingPages: 30,
-			}),
-		});
-
-		const pages = octokit.request.mock.calls.map((call) => call[1].page);
-		expect(Math.max(...pages)).toBeLessThanOrEqual(400);
 	});
 
 	it("stops the full fetch at the reachable page cap for repos above 40,000 stars", async () => {
@@ -437,24 +450,5 @@ describe("fetchAllStargazers", () => {
 
 		expect(result[0].coveredStars).toBeUndefined();
 		expect(result[0].incomplete).toBe(false);
-	});
-
-	it("fetches only the first page when maxPages is 1", async () => {
-		const octokit = {
-			request: vi.fn().mockResolvedValue({ data: [makeStargazerResponse({ login: "alice" })] }),
-		};
-
-		await fetchAllStargazers({
-			octokit: octokit as unknown as Octokit,
-			repos: [makeRepoInfo({ name: "huge", stars: 5000 })],
-			config: makeConfig({
-				smartSampling: true,
-				smartSamplingThreshold: 1500,
-				smartSamplingPages: 1,
-			}),
-		});
-
-		expect(octokit.request).toHaveBeenCalledTimes(1);
-		expect(octokit.request.mock.calls[0][1].page).toBe(1);
 	});
 });

@@ -14,8 +14,8 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
-  check:
-    name: Check
+  verify:
+    name: Verify
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -23,12 +23,19 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: ./.github/actions/prepare-env
-      - name: Verify
-        run: pnpm verify
+      - uses: $/.github/actions/prepare-env
+      - parallel:
+          - name: Format
+            run: pnpm format:check
+          - name: Typecheck
+            run: pnpm typecheck
+          - name: Build
+            run: pnpm build
+          - name: Unit tests
+            run: pnpm test:ut:coverage
       - name: Upload coverage to Codecov
         if: ${{ !cancelled() }}
-        uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f # v7.0.0
+        uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5 # v7.1.1
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
           files: ./coverage/lcov.info
@@ -36,7 +43,7 @@ jobs:
 
   release:
     name: Semantic Release
-    needs: [check]
+    needs: [verify]
     if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -54,7 +61,15 @@ jobs:
           fetch-depth: 0
           token: ${{ secrets.PAT }}
           persist-credentials: false
-      - uses: ./.github/actions/prepare-env
+      - name: Release from the head of main
+        run: |
+          git fetch --quiet origin main
+          if git merge-base --is-ancestor HEAD origin/main; then
+            git merge --ff-only --quiet origin/main
+          else
+            echo "::warning::main no longer contains this run's sha, so the release stays on it and semantic-release will stand down. The run for main's new head releases instead."
+          fi
+      - uses: $/.github/actions/prepare-env
       - name: Build
         run: pnpm build
       - name: Semantic Release
@@ -76,3 +91,14 @@ jobs:
           git tag -fa "$MAJOR_VERSION" "${LATEST_TAG}^{}" -m "Update $MAJOR_VERSION to $LATEST_TAG"
 
           git push "https://x-access-token:${GITHUB_TOKEN}@github.com/${GH_REPO}.git" "$MAJOR_VERSION" --force
+
+  check:
+    name: Check
+    needs: [verify, release]
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Fail if any job above did not succeed
+        if: ${{ contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') }}
+        run: exit 1

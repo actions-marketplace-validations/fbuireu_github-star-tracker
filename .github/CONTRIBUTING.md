@@ -6,14 +6,14 @@ here: the bundle is expected to be rebuilt in the same commit as the source, whi
 documentation set is verified by a test, which does. Read this before your first pull request; it will save
 you a rejected commit.
 
-If you want the shape of the codebase, that is [CLAUDE.md](../CLAUDE.md) and the nested guides it links, and
-[ARCHITECTURE.md](../ARCHITECTURE.md) for the big picture. If you want the vocabulary, that is
-[CONTEXT.md](../CONTEXT.md). If you want the *why*, that is [docs/adr/](../docs/adr/).
+If you want the shape of the codebase, that is [AGENTS.md](../AGENTS.md) and the nested guides it links, and
+[ARCHITECTURE.md](../ARCHITECTURE.md) for the big picture. If you want how code here is written, and what a review
+holds a diff to, that is [CODING_STANDARDS.md](../CODING_STANDARDS.md). If you want the vocabulary, that is
+[GLOSSARY.md](../GLOSSARY.md). If you want the _why_, that is [docs/adr/](../docs/adr/).
 
 ## Code of Conduct
 
 By participating you are expected to uphold the [Code of Conduct](./CODE_OF_CONDUCT.md). In short:
-
 - **Be respectful**: different viewpoints and experiences are valuable
 - **Be constructive**: focus on what is best for the project
 - **Be collaborative**: work together towards common goals
@@ -44,16 +44,16 @@ ideas are already being talked about.
 
 Use the [documentation template](ISSUE_TEMPLATE/documentation.yml), or just open a pull request. The
 user-facing documentation is the [wiki](../docs/wiki/), edited **in this repository** and published by
-[`sync-wiki.yml`](./workflows/sync-wiki.yml) on every push touching it, so an edit made in the wiki UI is
-overwritten on the next sync. The agent-facing guides (`CLAUDE.md` and friends) are held to the code by a
-test, so read *The docs are part of the change* below before editing one.
+[`sync-wiki.yml`](./workflows/sync-wiki.yml) on every push to `main` touching it, so an edit made in the wiki UI is
+overwritten on the next sync. The agent-facing guides (`AGENTS.md` and friends) are held to the code by a
+test, so read _The docs are part of the change_ below before editing one.
 
 ## Getting started
 
 Both runtimes are pinned exactly and must match: Node in [`.nvmrc`](../.nvmrc), mirrored in `engines.node`,
 and pnpm in `packageManager`. Read the pin from the file; it is not written down anywhere else on purpose.
 
-Note that `engines.node` is the *development* pin. The shipped runtime is Node 24, set by `runs.using` in
+Note that `engines.node` is the _development_ pin. The shipped runtime is Node 24, set by `runs.using` in
 [`action.yml`](../action.yml) and by the esbuild `target`, so a `node:*` API newer than Node 24 will
 type-check and bundle here and then fail on a runner.
 
@@ -77,16 +77,16 @@ pnpm typecheck          # tsc --noEmit
 pnpm test:ut            # unit tests (vitest), the docs contract included
 pnpm test:docs          # the docs contract alone
 pnpm build              # bundle src/index.ts into dist/index.js
-pnpm verify             # format check, typecheck, build and coverage: what CI runs
+pnpm verify             # format check, typecheck, build and coverage: the checks CI runs as parallel steps
 ```
 
 Run one layer with `pnpm vitest run src/domain`, one file with `pnpm vitest run src/domain/forecast.test.ts`.
 
-Husky runs lint-staged on `pre-commit`, commitlint on `commit-msg` and `pnpm verify:changed` on `pre-push`.
-The hook runs the changed-only variant rather than `verify` because the coverage floor and a subset run
-cannot both hold; CI runs the full `pnpm verify` on the pushed sha, so a push whose coverage dropped still
-fails its check. [CLAUDE.md](../CLAUDE.md) explains the trade. Because `pre-push` rebuilds the bundle, a
-push can leave `dist/` dirty; commit that result rather than discarding it.
+Husky runs lint-staged on `pre-commit`, commitlint on `commit-msg` and `pnpm verify:changed` on `pre-push`. The hook
+runs the changed-only variant rather than `verify` because the coverage floor and a subset run cannot both hold; CI runs
+every check of `pnpm verify` on the pushed sha, as parallel steps, so a push whose coverage dropped still fails its
+check. [ARCHITECTURE.md](../ARCHITECTURE.md) explains the trade. Because `pre-push` rebuilds the bundle, a push can
+leave `dist/` dirty; commit that result rather than discarding it.
 
 The bundle. `action.yml` runs `dist/index.js` directly, with no install step, so the bundle is committed
 ([ADR 0003](../docs/adr/0003-commit-the-bundled-dist-directory.md)). Run `pnpm build` and commit the
@@ -112,7 +112,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: ./  # Uses local action code
+      - uses: $/ # Uses local action code
         with:
           github-token: ${{ secrets.STAR_TRACKER_TOKEN }}
 ```
@@ -121,50 +121,36 @@ The action runs the committed `dist/index.js`, not your sources, so run `pnpm bu
 the workflow. For logging use `@actions/core` rather than `console`, which Biome rejects: its helpers annotate
 the workflow log, and `core.debug` output only appears when the `ACTIONS_STEP_DEBUG` secret is set.
 
-## Conventions that will bite you if you skip them
+## Code conventions
 
-- **Use the glossary's words.** [CONTEXT.md](../CONTEXT.md) names one canonical term per concept: snapshot,
-  baseline, data branch, sampled repo. A variable named after a retired term is a defect, not a style
-  preference.
-- **No explanatory comments in `.ts` files**, without exception; the tree contains none. The `CLAUDE.md`
-  guides carry the explanation instead.
-- **One argument is positional and two or more are a single object typed `<FunctionName>Params`**:
-  `makeRepoInfo({ name, stars }: MakeRepoInfoParams)`. The exception is a function a runtime calls back,
-  such as the `sort` comparator `alphabetically`. The docs contract asserts this over the whole of `src`,
-  fixtures included.
-- **Cross-layer imports use the path aliases; same-layer imports stay relative.** `domain`, `presentation`
-  and `i18n` stay pure: no `@actions/*`, no `node:*`, no network, no clock beyond an injectable `now`.
-- **No Biome suppressions.** Fix the root cause instead of `biome-ignore`. `noConsole` is an error with no
-  allowlist: report through `@actions/core`.
-- **Tests are colocated** next to the file they cover, as `src/**/*.test.ts`, and coverage is global at
-  85% on every metric. Biome sorts named imports, so `import { describe, expect, it } from "vitest"` is the
-  only order that passes `pnpm lint:all`.
-- **Defaults live in `src/config/defaults.ts`, not in `action.yml`.** Overridable inputs deliberately
-  carry an empty `default:` so the config file can win, and a test reads the real `action.yml` and fails if
-  you add one.
+How code here is written is [CODING_STANDARDS.md](../CODING_STANDARDS.md), the file a review holds a diff to. It
+opens with what Biome, the type checker and the tests already enforce; the rules after that are the ones a
+reviewer checks by hand.
 
 ## Commit rules
 
 Conventional Commits, enforced by commitlint on `commit-msg`. semantic-release owns versioning, so the type
 you choose is the version bump you get.
 
-| Type | Bump | Example |
-| --- | --- | --- |
-| `feat` | minor | `feat(charts): add a comparison chart for the top repositories` |
-| `fix` | patch | `fix(email): resolve SMTP authentication with Gmail` |
-| `perf` | patch | `perf(api): halve the GitHub API calls per run` |
-| `revert` | patch | `revert: feat(charts): add a comparison chart for the top repositories` |
-| `docs`, `style`, `refactor`, `test`, `chore`, `ci`, `build` | none | `docs: add a troubleshooting page to the wiki` |
+| Type                                                        | Bump                                                                                     | Example                                                                 |
+| ----------------------------------------------------------- | ---------------------------------------------------------------------------------------- | ----------------------------------------------------------------------- |
+| `feat`                                                      | minor                                                                                    | `feat(charts): add a comparison chart for the top repositories`         |
+| `fix`                                                       | patch                                                                                    | `fix(email): resolve SMTP authentication with Gmail`                    |
+| `perf`                                                      | patch                                                                                    | `perf(api): halve the GitHub API calls per run`                         |
+| `revert`                                                    | patch, only when the body keeps git's `This reverts commit <sha>.` line; none without it | `revert: feat(charts): add a comparison chart for the top repositories` |
+| `docs`, `style`, `refactor`, `test`, `chore`, `ci`, `build` | none                                                                                     | `docs: add a troubleshooting page to the wiki`                          |
 
 Breaking changes take a `!` after the type or a `BREAKING CHANGE:` footer, and bump the major.
 
-A scope is optional and unconstrained: [`commitlint.config.ts`](../commitlint.config.ts) extends
-`@commitlint/config-conventional` and declares no `scope-enum`.
+A scope is optional and drawn from no fixed list: [`commitlint.config.ts`](../commitlint.config.ts) extends
+`@commitlint/config-conventional` and declares no `scope-enum`, but it does require a lower-, camel- or
+Pascal-case scope and caps the header at 130 characters.
 
 `main` takes squash merges, so the pull request title is the commit that lands. The `commit-msg` hook
 lints what you type locally, and [`commit-message.yml`](./workflows/commit-message.yml) lints the pull
 request title on every open and edit, because that title is what semantic-release parses. Title the pull
-request the way you would title a commit.
+request the way you would title a commit; its description becomes the commit's body. Undoing a broken
+release takes a `fix` title, as [Rolling back a release](../docs/wiki/CI-CD.md#rolling-back-a-release) says.
 
 Do **not** add a `Co-Authored-By` trailer for an AI assistant to a commit or a pull request.
 
@@ -175,28 +161,33 @@ commit**. A follow-up commit is a promise, not a fix.
 [`docs/docs-consistency.test.ts`](../docs/docs-consistency.test.ts) runs with the unit tests and fails the
 build when the docs and the repo disagree: a dead link, a cited file that is not in the tree, an
 `action.yml` input missing from a surface that lists them or out of alphabetical order, a documented default
-that is not the one the code declares, an ADR off its template. "The documentation set" is meant literally:
+that is not the one the code declares, an ADR off its template, a workflow or secret the
+[CI/CD guide](../docs/wiki/CI-CD.md) does not name, a Mermaid diagram not drawn `handDrawn` on `dagre`. "The documentation set" is meant literally:
 the root guides, everything under `docs/` and `.github/`, this file included. When it fails, fix whichever
-side is wrong, and never delete an assertion to get green. [CLAUDE.md](../CLAUDE.md) has the full table of
+side is wrong, and never delete an assertion to get green. [AGENTS.md](../AGENTS.md) has the full table of
 what to update for a given change, and [ARCHITECTURE.md](../ARCHITECTURE.md) holds the ADR index.
 
-Changed inputs, outputs or defaults are reflected in [`action.yml`](../action.yml), the wiki, the README and
-the *Outputs* section of [`src/application/CLAUDE.md`](../src/application/CLAUDE.md), always alphabetically.
+Changed inputs, outputs or defaults are reflected in [`action.yml`](../action.yml), the wiki, the README, the
+_Outputs_ section of [`src/application/AGENTS.md`](../src/application/AGENTS.md) and the outputs line of
+[`ARCHITECTURE.md`](../ARCHITECTURE.md), always alphabetically.
 
 ## Pull requests
 
 1. Fork, branch from `main`, make the change.
 2. Run the checks above; rebuild and commit `dist/`; fill in the pull request template, GIF included.
-3. CI runs `pnpm verify` on the pushed sha, so a pull request cannot merge while it is red.
+3. CI runs the checks of `pnpm verify` on the pushed sha, as parallel steps, so a pull request cannot merge while it is
+   red.
 4. After merge to `main`, the `release` job rebuilds the bundle and semantic-release versions, publishes and
    commits `package.json`, [`CHANGELOG.md`](../CHANGELOG.md) and `dist/` back as
-   `chore(release): <version> [skip ci]`; a final step moves the floating `v1` tag, which is what consumers
-   reference. There is no manual release step.
+   `chore(github-star-tracker): release <version> [skip ci]`; a final step moves the floating `v1` tag, which is
+   what consumers reference. There is no manual release step.
+
+Every workflow, the four checks the `main` ruleset requires, the release job step by step and the secrets behind it
+are the wiki's [CI/CD](../docs/wiki/CI-CD.md) guide.
 
 ## Use of AI
 
 If you use AI tools when contributing:
-
 - **Review everything it produces.** You are responsible for what you submit.
 - **Check its claims against the code.** A doc claim nobody verified is a doc claim that is wrong.
 - **Disclose significant use** in the pull request description.

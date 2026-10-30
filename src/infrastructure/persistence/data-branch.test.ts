@@ -33,7 +33,7 @@ vi.mock("./storage", async (importOriginal) => ({
 	writeArtefact: vi.fn(),
 	writeChart: vi.fn(),
 	writeStargazers: vi.fn(),
-	pruneCharts: vi.fn().mockReturnValue([]),
+	pruneCharts: vi.fn(),
 	commitAndPush: vi.fn(),
 }));
 
@@ -54,7 +54,7 @@ function makeArtefacts(overrides: Partial<PublishedArtefacts> = {}): PublishedAr
 const BASE = { dataBranch: "star-data", readOnly: false, token: "tok" };
 
 beforeEach(() => {
-	vi.clearAllMocks();
+	vi.resetAllMocks();
 	vi.mocked(initializeDataBranch).mockReturnValue(DATA_DIR);
 	vi.mocked(pruneCharts).mockReturnValue([]);
 });
@@ -205,21 +205,45 @@ describe("publish", () => {
 		expect(commitAndPush).not.toHaveBeenCalled();
 	});
 
-	it("stages every write before the push, so add -A can see them", async () => {
+	it("writes in the documented order and stages every write before the push, so add -A can see them", async () => {
 		const order: string[] = [];
-		vi.mocked(writeHistory).mockImplementation(() => {
-			order.push("write");
+		vi.mocked(writeHistory).mockImplementationOnce(() => {
+			order.push("history");
 		});
-		vi.mocked(writeChart).mockImplementation(() => {
+		vi.mocked(writeArtefact).mockImplementation(({ artefact }) => {
+			order.push(artefact);
+		});
+		vi.mocked(writeStargazers).mockImplementationOnce(() => {
+			order.push("stargazers");
+		});
+		vi.mocked(writeChart).mockImplementationOnce(() => {
 			order.push("chart");
 		});
-		vi.mocked(commitAndPush).mockImplementation(() => {
+		vi.mocked(pruneCharts).mockImplementationOnce(() => {
+			order.push("prune");
+			return [];
+		});
+		vi.mocked(commitAndPush).mockImplementationOnce(() => {
 			order.push("push");
 			return true;
 		});
 
-		await publish({ artefacts: makeArtefacts({ charts: [{ filename: "a.svg", svg: "<svg/>" }] }) });
+		await publish({
+			artefacts: makeArtefacts({
+				stargazerMap: { "user/repo": ["a"] },
+				charts: [{ filename: "a.svg", svg: "<svg/>" }],
+			}),
+		});
 
-		expect(order).toEqual(["write", "chart", "push"]);
+		expect(order).toEqual([
+			"history",
+			Artefact.REPORT,
+			Artefact.BADGE,
+			Artefact.CSV,
+			"stargazers",
+			"chart",
+			"prune",
+			"push",
+		]);
 	});
 });

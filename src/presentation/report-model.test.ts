@@ -6,7 +6,7 @@ import type { StargazerDiffResult } from "@domain/stargazers";
 import { getTranslations } from "@i18n";
 import { makeComparisonResults, makeConfig, makeHistory, makeRepoResult } from "@shared/tests";
 import { describe, expect, it } from "vitest";
-import { buildForecastTable, buildReportModel, StargazerOutcome } from "./report-model";
+import { buildForecastTable, buildReportModel, type ReportModel, StargazerOutcome } from "./report-model";
 import type { ReportParams } from "./shared";
 
 const forecastData: ForecastData = {
@@ -22,38 +22,39 @@ const forecastData: ForecastData = {
 	repos: [],
 };
 
-interface ModelOf extends Partial<Omit<ReportParams, "config">> {
+interface ModelOfParams extends Partial<Omit<ReportParams, "config">> {
 	config?: Partial<Config>;
 }
 
-function modelOf({ config, ...overrides }: ModelOf = {}) {
+function modelOf({ config, ...overrides }: ModelOfParams = {}): ReportModel {
 	return buildReportModel({
 		config: makeConfig(config),
 		results: makeComparisonResults(),
-		previousTimestamp: "2026-01-01T00:00:00Z",
+		baselineSnapshotTimestamp: "2026-01-01T00:00:00Z",
 		...overrides,
 	});
 }
 
 describe("buildReportModel", () => {
 	describe("run identity", () => {
-		it("dates the run and the baseline it is measured against", () => {
-			const model = modelOf();
+		it("dates the run and the Baseline Snapshot it is measured against", () => {
+			const model = modelOf({ now: new Date("2026-03-04T23:59:59.999Z") });
 
-			expect(model.prev).toBe("2026-01-01");
-			expect(model.now).toBe(new Date().toISOString().split("T")[0]);
+			expect(model.baselineSnapshotDate).toBe("2026-01-01");
+			expect(model.now).toBe("2026-03-04");
+			expect(model.generatedAt).toBe("2026-03-04T23:59:59.999Z");
 			expect(model.isFirstRun).toBe(false);
 		});
 
-		it("marks a missing baseline as the first run", () => {
-			const model = modelOf({ previousTimestamp: null });
+		it("marks a missing Baseline Snapshot as the first run", () => {
+			const model = modelOf({ baselineSnapshotTimestamp: null });
 
 			expect(model.isFirstRun).toBe(true);
-			expect(model.prev).toBe(getTranslations("en").report.firstRun);
+			expect(model.baselineSnapshotDate).toBe(getTranslations("en").report.firstRun);
 		});
 
-		it("reads the first run off the baseline, not off the rendered date", () => {
-			const model = modelOf({ previousTimestamp: getTranslations("en").report.firstRun });
+		it("reads the first run off the Baseline Snapshot, not off the rendered date", () => {
+			const model = modelOf({ baselineSnapshotTimestamp: getTranslations("en").report.firstRun });
 
 			expect(model.isFirstRun).toBe(false);
 		});
@@ -102,11 +103,11 @@ describe("buildReportModel", () => {
 
 	describe("chart history", () => {
 		it("is plottable only with charts on and at least two snapshots", () => {
-			const history = makeHistory([10, 20]);
+			const history = makeHistory({ starCounts: [10, 20] });
 			const outcomes = [
 				modelOf({ history, config: { includeCharts: true } }),
 				modelOf({ history, config: { includeCharts: false } }),
-				modelOf({ history: makeHistory([10]), config: { includeCharts: true } }),
+				modelOf({ history: makeHistory({ starCounts: [10] }), config: { includeCharts: true } }),
 				modelOf({ history: null, config: { includeCharts: true } }),
 			].map((model) => [model.chartHistory !== null, model.chartHistory]);
 
@@ -155,7 +156,7 @@ describe("buildReportModel", () => {
 	});
 
 	describe("Velocity", () => {
-		const velocityHistory = makeHistory([100, 200]);
+		const velocityHistory = makeHistory({ starCounts: [100, 200] });
 
 		it("is absent unless the metrics are enabled and a stored history is supplied", () => {
 			expect(modelOf({ velocityHistory }).velocity).toBeNull();
@@ -163,14 +164,32 @@ describe("buildReportModel", () => {
 			expect(modelOf({ velocityHistory, config: { velocityMetrics: true } }).velocity).not.toBeNull();
 		});
 
-		it("resolves the projection to a single present-or-absent value", () => {
-			const model = modelOf({ velocityHistory, config: { velocityMetrics: true } });
+		it("measures Velocity from the stored history, never from the chart history", () => {
+			const chartHistory = makeHistory({ starCounts: [100, 5_000], stepDays: 100 });
 
-			expect(model.velocity).toMatchObject({
-				starsPerDay: expect.any(Number),
-				growthPercent: 100,
-				projection: { days: expect.any(Number), milestone: expect.any(Number) },
+			const model = modelOf({
+				history: chartHistory,
+				velocityHistory,
+				config: { includeCharts: true, velocityMetrics: true },
 			});
+
+			expect(model.chartHistory).toBe(chartHistory);
+			expect(model.velocity?.starsPerDay).toBe(14.29);
+		});
+
+		it("resolves the next Milestone to a single present-or-absent value", () => {
+			const growing = modelOf({ velocityHistory, config: { velocityMetrics: true } });
+			const flat = modelOf({
+				velocityHistory: makeHistory({ starCounts: [100, 100] }),
+				config: { velocityMetrics: true },
+			});
+
+			expect(growing.velocity).toEqual({
+				starsPerDay: 14.29,
+				growthPercent: 100,
+				nextMilestone: { days: 21, milestone: 500 },
+			});
+			expect(flat.velocity?.nextMilestone).toBeNull();
 		});
 
 		it("nests under the forecast only when there is a forecast", () => {
@@ -180,7 +199,7 @@ describe("buildReportModel", () => {
 	});
 
 	describe("per-repo forecasts", () => {
-		const history = makeHistory([100, 120, 150]);
+		const history = makeHistory({ starCounts: [100, 120, 150] });
 		const withRepos: ForecastData = {
 			...forecastData,
 			repos: [

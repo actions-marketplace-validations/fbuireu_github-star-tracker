@@ -45,12 +45,15 @@ vi.mock("@domain/forecast", async (importOriginal) => ({
 	computeForecast: vi.fn(),
 }));
 vi.mock("@domain/stargazers", () => ({ diffStargazers: vi.fn(), buildStargazerMap: vi.fn() }));
-vi.mock("@domain/formatting", () => ({ deltaIndicator: vi.fn() }));
+vi.mock("@domain/formatting", async (importOriginal) => ({
+	...(await importOriginal<typeof import("@domain/formatting")>()),
+	deltaIndicator: vi.fn(),
+}));
 vi.mock("@infrastructure/github/filters", () => ({ getRepos: vi.fn() }));
 vi.mock("@infrastructure/github/stargazers", () => ({ fetchAllStargazers: vi.fn() }));
 vi.mock("@infrastructure/persistence/data-branch", () => ({ withDataBranch: vi.fn() }));
 vi.mock("@infrastructure/persistence/storage", () => ({
-	writeHtmlReport: vi.fn().mockReturnValue("/tmp/star-tracker-report.html"),
+	writeHtmlReport: vi.fn(),
 }));
 vi.mock("@infrastructure/notification/email", () => ({
 	getEmailConfig: vi.fn(),
@@ -102,7 +105,7 @@ function publishedChart(filename: string): { filename: string; svg: string } | u
 type Measurement = ReturnType<typeof measureRun>;
 function mockMeasurement(overrides: Partial<Measurement> = {}): Measurement {
 	const measurement: Measurement = {
-		baselineTimestamp: null,
+		baselineSnapshotTimestamp: null,
 		results: defaultResults,
 		summary: defaultSummary,
 		updatedHistory: { ...defaultUpdatedHistory },
@@ -113,7 +116,7 @@ function mockMeasurement(overrides: Partial<Measurement> = {}): Measurement {
 	vi.mocked(measureRun).mockReturnValue(measurement);
 	return measurement;
 }
-function setupDefaults() {
+function setupDefaults(): void {
 	vi.mocked(core.getInput).mockImplementation((name: string) => {
 		if (name === "github-token") return "fake-token";
 		return "";
@@ -121,6 +124,7 @@ function setupDefaults() {
 	vi.mocked(loadConfig).mockReturnValue(defaultConfig);
 	vi.mocked(getRepos).mockResolvedValue(defaultRepos);
 	vi.mocked(withDataBranch).mockImplementation(({ run }) => run(branch as unknown as DataBranch));
+	vi.mocked(writeHtmlReport).mockReturnValue("/tmp/star-tracker-report.html");
 	branch.readHistory.mockReturnValue(defaultHistory);
 	mockMeasurement();
 	vi.mocked(deltaIndicator).mockReturnValue("+10");
@@ -139,11 +143,12 @@ function setupDefaults() {
 }
 describe("trackStars", () => {
 	beforeEach(() => {
-		vi.clearAllMocks();
+		vi.resetAllMocks();
+		vi.useFakeTimers({ now: new Date("2026-07-01T00:00:00Z"), toFake: ["Date"] });
 		setupDefaults();
 	});
 	afterEach(() => {
-		vi.restoreAllMocks();
+		vi.useRealTimers();
 	});
 	it("runs the full happy path", async () => {
 		await trackStars();
@@ -210,7 +215,7 @@ describe("trackStars", () => {
 			vi.mocked(getEmailConfig).mockReturnValue(emailConfig);
 			await trackStars();
 			expect(sendEmail).not.toHaveBeenCalled();
-			expect(core.info).toHaveBeenCalledWith("No stars changed since the baseline, skipping email");
+			expect(core.info).toHaveBeenCalledWith("No stars changed since the Baseline Snapshot, skipping email");
 		});
 		it("skips email when threshold is not reached", async () => {
 			vi.mocked(loadConfig).mockReturnValue({ ...defaultConfig, notificationThreshold: 10 });
@@ -228,11 +233,6 @@ describe("trackStars", () => {
 			await trackStars();
 			expect(sendEmail).toHaveBeenCalled();
 			expect(core.setOutput).toHaveBeenCalledWith("should-notify", "true");
-		});
-		it("skips email when getEmailConfig returns null", async () => {
-			vi.mocked(getEmailConfig).mockReturnValue(null);
-			await trackStars();
-			expect(sendEmail).not.toHaveBeenCalled();
 		});
 		it("catches email errors and logs a warning", async () => {
 			vi.mocked(getEmailConfig).mockReturnValue(emailConfig);
@@ -368,7 +368,6 @@ describe("trackStars", () => {
 					{ timestamp: "2026-01-02T00:00:00Z", totalStars: 100, repos: [] },
 				],
 			};
-			branch.readHistory.mockReturnValue({ snapshots: historyWithSnapshots.snapshots.slice(0, 1) });
 			mockMeasurement({ updatedHistory: historyWithSnapshots });
 			mockCharts({ [ChartKind.STAR_HISTORY]: "<svg>chart</svg>" });
 			await trackStars();
@@ -382,45 +381,6 @@ describe("trackStars", () => {
 				}),
 			);
 			expect(publishedChart("star-history.svg")?.svg).toBe("<svg>chart</svg>");
-		});
-		it("draws each per-repo chart on its own timeline, not the shared global one", async () => {
-			vi.mocked(getRepos).mockResolvedValue([
-				makeRepoInfo({ name: "old", stars: 100, overrides: { owner: "u", fullName: "u/old" } }),
-				makeRepoInfo({ name: "new", stars: 30, overrides: { owner: "u", fullName: "u/new" } }),
-			]);
-			mockMeasurement({
-				results: {
-					repos: [
-						makeRepoResult({ name: "old", overrides: { fullName: "u/old", owner: "u", current: 100 } }),
-						makeRepoResult({ name: "new", overrides: { fullName: "u/new", owner: "u", current: 30 } }),
-					],
-					summary: defaultSummary,
-				},
-			});
-			vi.mocked(fetchAllStargazers).mockResolvedValue([
-				{
-					repoFullName: "u/old",
-					stargazers: makeStargazerSeries({
-						count: 100,
-						startMs: Date.UTC(2025, 0, 1),
-						stepDays: 5,
-					}),
-				},
-				{
-					repoFullName: "u/new",
-					stargazers: makeStargazerSeries({ count: 30, startMs: Date.UTC(2026, 4, 25) }),
-				},
-			]);
-			const perRepo: Record<string, { snapshots: { timestamp: string; totalStars: number }[] }> = {};
-			vi.mocked(renderSvgChart).mockImplementation(({ request }) => {
-				if (request.kind === ChartKind.PER_REPO) perRepo[request.repoFullName] = request.history;
-				return "<svg/>";
-			});
-			await trackStars();
-			const series = perRepo["u/new"].snapshots.map((snapshot) => snapshot.totalStars);
-			expect(perRepo["u/new"].snapshots[0].timestamp.startsWith("2026-05")).toBe(true);
-			expect(series[0]).toBeGreaterThan(0);
-			expect(series.at(-1)).toBe(30);
 		});
 		it("falls back to stored snapshots for a repo whose stargazers were unreachable (#148)", async () => {
 			vi.mocked(getRepos).mockResolvedValue([
@@ -469,39 +429,6 @@ describe("trackStars", () => {
 			expect(perRepo["u/restricted"]).toBe(storedSnapshots);
 			expect(perRepo["u/reachable"]).not.toBe(storedSnapshots);
 		});
-		it("hands both report renderers the same params, config included", async () => {
-			const config = {
-				...defaultConfig,
-				chartTheme: ChartTheme.LIGHT,
-				emailTheme: ChartTheme.DARK,
-			};
-			vi.mocked(loadConfig).mockReturnValue(config);
-			await trackStars();
-
-			const markdownParams = vi.mocked(generateMarkdownReport).mock.calls[0][0];
-			const htmlParams = vi.mocked(generateHtmlReport).mock.calls[0][0];
-
-			expect(markdownParams.config).toBe(config);
-			expect(htmlParams).toBe(markdownParams);
-		});
-		it("skips SVG chart when includeCharts is false", async () => {
-			vi.mocked(loadConfig).mockReturnValue({ ...defaultConfig, includeCharts: false });
-			const historyWithSnapshots = {
-				snapshots: [
-					{ timestamp: "2026-01-01T00:00:00Z", totalStars: 80, repos: [] },
-					{ timestamp: "2026-01-02T00:00:00Z", totalStars: 100, repos: [] },
-				],
-			};
-			branch.readHistory.mockReturnValue(historyWithSnapshots);
-			await trackStars();
-			expect(renderSvgChart).not.toHaveBeenCalled();
-			expect(published().charts).toHaveLength(0);
-		});
-		it("skips SVG chart when history has fewer than 2 snapshots", async () => {
-			await trackStars();
-			expect(renderSvgChart).not.toHaveBeenCalled();
-			expect(published().charts).toHaveLength(0);
-		});
 		it("skips writeChart when the star-history chart comes back null", async () => {
 			const historyWithSnapshots = {
 				snapshots: [
@@ -509,7 +436,6 @@ describe("trackStars", () => {
 					{ timestamp: "2026-01-02T00:00:00Z", totalStars: 100, repos: [] },
 				],
 			};
-			branch.readHistory.mockReturnValue({ snapshots: historyWithSnapshots.snapshots.slice(0, 1) });
 			mockMeasurement({ updatedHistory: historyWithSnapshots });
 			vi.mocked(renderSvgChart).mockReturnValue(null);
 			await trackStars();
@@ -558,20 +484,10 @@ describe("trackStars", () => {
 				[ChartKind.FORECAST]: "<svg>fc</svg>",
 			});
 			await trackStars();
-			expect(chartRequests(ChartKind.PER_REPO)).toContainEqual(
-				expect.objectContaining({ repoFullName: "user/repo-a" }),
-			);
 			expect(publishedChart("user-repo-a.svg")?.svg).toBe("<svg>repo</svg>");
 			expect(publishedChart("comparison.svg")?.svg).toBe("<svg>cmp</svg>");
 			expect(chartRequests(ChartKind.FORECAST)).toContainEqual(expect.objectContaining({ forecastData }));
 			expect(publishedChart("forecast.svg")?.svg).toBe("<svg>fc</svg>");
-		});
-		it("excludes removed repos from the chart set", async () => {
-			mockCharts({ [ChartKind.PER_REPO]: "<svg>repo</svg>" });
-			await trackStars();
-			expect(chartRequests(ChartKind.PER_REPO)).not.toContainEqual(
-				expect.objectContaining({ repoFullName: "user/repo-c" }),
-			);
 		});
 		it("skips writing charts that come back null", async () => {
 			await trackStars();
@@ -580,23 +496,13 @@ describe("trackStars", () => {
 			expect(chartRequests(ChartKind.FORECAST).length).toBeGreaterThan(0);
 			expect(publishedChart("forecast.svg")).toBeUndefined();
 		});
-		it("skips the forecast chart when no forecast data is available", async () => {
-			vi.mocked(computeForecast).mockReturnValue(null);
-			await trackStars();
-			expect(chartRequests(ChartKind.FORECAST)).toHaveLength(0);
-		});
 	});
 	describe("github enterprise (GHES)", () => {
-		const savedApiUrl = process.env.GITHUB_API_URL;
 		beforeEach(() => {
-			delete process.env.GITHUB_API_URL;
+			vi.stubEnv("GITHUB_API_URL", undefined);
 		});
 		afterEach(() => {
-			if (savedApiUrl !== undefined) {
-				process.env.GITHUB_API_URL = savedApiUrl;
-			} else {
-				delete process.env.GITHUB_API_URL;
-			}
+			vi.unstubAllEnvs();
 		});
 		it("calls getOctokit without baseUrl when no API URL is configured", async () => {
 			await trackStars();
@@ -616,12 +522,43 @@ describe("trackStars", () => {
 			);
 		});
 		it("falls back to GITHUB_API_URL env var when input is empty", async () => {
-			process.env.GITHUB_API_URL = "https://ghes.corp.com/api/v3";
+			vi.stubEnv("GITHUB_API_URL", "https://ghes.corp.com/api/v3");
 			await trackStars();
 			expect(github.getOctokit).toHaveBeenCalledWith("fake-token", { baseUrl: "https://ghes.corp.com/api/v3" }, retry);
 		});
+		it.each([
+			{ label: "a bare host", apiUrl: "ghes.corp.com" },
+			{ label: "a scheme other than https", apiUrl: "ftp://ghes.corp.com/api/v3" },
+			{ label: "plain http", apiUrl: "http://ghes.corp.com/api/v3" },
+			{ label: "https without its slashes", apiUrl: "https:/ghes.corp.com/api/v3" },
+			{ label: "a string that is not a URL", apiUrl: "not a url" },
+		])("fails the run on a github-api-url that is $label instead of calling GitHub", async ({ apiUrl }) => {
+			vi.mocked(core.getInput).mockImplementation((name: string) => {
+				if (name === "github-token") return "fake-token";
+				if (name === "github-api-url") return apiUrl;
+				return "";
+			});
+			await trackStars();
+			expect(github.getOctokit).not.toHaveBeenCalled();
+			expect(core.setFailed).toHaveBeenCalledWith(expect.stringContaining(`Invalid github-api-url "${apiUrl}"`));
+		});
+		it("names the GITHUB_API_URL fallback when that is where the bad URL came from", async () => {
+			vi.stubEnv("GITHUB_API_URL", "ghes.corp.com");
+			await trackStars();
+			expect(core.setFailed).toHaveBeenCalledWith(
+				expect.stringContaining("or from GITHUB_API_URL when the input is empty"),
+			);
+		});
+		it("refuses a plain http GITHUB_API_URL too, saying the token would travel in clear text", async () => {
+			vi.stubEnv("GITHUB_API_URL", "http://ghes.corp.com/api/v3");
+			await trackStars();
+			expect(github.getOctokit).not.toHaveBeenCalled();
+			expect(core.setFailed).toHaveBeenCalledWith(
+				'Star Tracker failed: Invalid github-api-url "http://ghes.corp.com/api/v3" (read from the input, or from GITHUB_API_URL when the input is empty). Every request carries the token, and plain http would send it in clear text, so set an absolute https URL, such as https://github.example.com/api/v3.',
+			);
+		});
 		it("prefers input over GITHUB_API_URL env var", async () => {
-			process.env.GITHUB_API_URL = "https://ghes-env.corp.com/api/v3";
+			vi.stubEnv("GITHUB_API_URL", "https://ghes-env.corp.com/api/v3");
 			vi.mocked(core.getInput).mockImplementation((name: string) => {
 				if (name === "github-token") return "fake-token";
 				if (name === "github-api-url") return "https://ghes-input.corp.com/api/v3";
@@ -636,6 +573,21 @@ describe("trackStars", () => {
 		});
 	});
 	describe("data flow", () => {
+		it("hands both report renderers the config the Run was loaded with", async () => {
+			const config = {
+				...defaultConfig,
+				chartTheme: ChartTheme.LIGHT,
+				emailTheme: ChartTheme.DARK,
+			};
+			vi.mocked(loadConfig).mockReturnValue(config);
+			await trackStars();
+
+			const markdownParams = vi.mocked(generateMarkdownReport).mock.calls[0][0];
+			const htmlParams = vi.mocked(generateHtmlReport).mock.calls[0][0];
+
+			expect(markdownParams.config).toBe(config);
+			expect(htmlParams.config).toBe(config);
+		});
 		it("hands the tracked set and the stored history to the measurement", async () => {
 			await trackStars();
 			expect(measureRun).toHaveBeenCalledWith(
@@ -678,13 +630,13 @@ describe("trackStars", () => {
 			await trackStars();
 			expect(measureRun).toHaveBeenCalledWith(expect.objectContaining({ comparisonWindow: CompareAgainst.D7 }));
 		});
-		it("derives previousTimestamp from the measured baseline when present", async () => {
-			mockMeasurement({ baselineTimestamp: "2026-01-01T00:00:00Z" });
+		it("dates the Reports from the measured Baseline Snapshot when there is one", async () => {
+			mockMeasurement({ baselineSnapshotTimestamp: "2026-01-01T00:00:00Z" });
 			await trackStars();
 
 			const { model } = vi.mocked(generateMarkdownReport).mock.calls[0][0];
 
-			expect(model.prev).toBe("2026-01-01");
+			expect(model.baselineSnapshotDate).toBe("2026-01-01");
 			expect(model.isFirstRun).toBe(false);
 		});
 		it("warns when max-history drops stored snapshots", async () => {
@@ -722,10 +674,10 @@ describe("trackStars", () => {
 			await trackStars();
 			expect(published().history.starsAtLastNotification).toBeUndefined();
 		});
-		it("includes delta indicator in commit message", async () => {
-			vi.mocked(deltaIndicator).mockReturnValue("+10");
+		it("composes the commit message from the total and the delta", async () => {
 			await trackStars();
-			expect(published().commitMessage).toContain("+10");
+			expect(deltaIndicator).toHaveBeenCalledWith(defaultSummary.totalDelta);
+			expect(published().commitMessage).toBe("Update star data: 100 total (+10)");
 		});
 		it("hands the read-only flag to the data branch rather than skipping the publish", async () => {
 			vi.mocked(loadConfig).mockReturnValue({ ...defaultConfig, readOnly: true });

@@ -14,14 +14,14 @@ recorded the result, `addSnapshot` appended it, and `shouldNotify` decided wheth
 was cleared. Each was individually testable and individually harmless. The order was not.
 
 Six rules held them together and none of them was expressible in a signature. `compareStars` had to receive
-the *Baseline Snapshot*, not the newest one. `createSnapshot` had to receive the *same* repository array
+the _Baseline Snapshot_, not the newest one. `createSnapshot` had to receive the _same_ repository array
 `compareStars` was given, or the appended Snapshot's total and its repositories disagreed. `addSnapshot` had
-to receive the *stored* History, not the updated one. `shouldNotify` had to read `starsAtLastNotification`
+to receive the _stored_ History, not the updated one. `shouldNotify` had to read `starsAtLastNotification`
 from the **pre-append** History, because that is what makes the Notification Threshold accumulate across
 Runs. And `addSnapshot` silently keeps the whole array when `maxHistory` is `0`, which is why `@config`
 rejects a non-positive `max-history` a layer away.
 
-All six lived as prose in two `CLAUDE.md` files. `@application/tracker` was the only caller, so nothing ever
+All six lived as prose in two `AGENTS.md` files. `@application/tracker` was the only caller, so nothing ever
 diverged, but nothing prevented it either, and the failure mode is a wrong Star Count rather than a crash.
 Its test mocked every one of them, so it asserted the call sequence it was itself defining: a reordering
 would have changed the numbers and kept the suite green.
@@ -46,7 +46,7 @@ the baseline advances only on delivery ([ADR 0011](./0011-the-notification-basel
 and delivery happens in `@application` after the email is sent. `measureRun` therefore reports
 `thresholdReached` and never writes `starsAtLastNotification`. `recordNotification` is the separate,
 explicit step that advances it, and it returns a new History rather than mutating the one it was given. It
-lives in `@domain/notification` alongside `settleNotification`, which is what decides *whether* to call it.
+lives in `@domain/notification` alongside `settleNotification`, which is what decides _whether_ to call it.
 `measureRun` cannot import it without a cycle, and that is the right shape: measuring and notifying are two
 acts, not one.
 
@@ -67,6 +67,7 @@ acts, not one.
 - **The cost is one more indirection** between `@application` and the comparison maths, and a
   `RunMeasurement` shape that has to grow whenever a Run needs to report something new. That is the trade:
   a wider return type in exchange for an order that cannot be got wrong.
-- The invariants this replaces are recorded in [`src/domain/CLAUDE.md`](../../src/domain/CLAUDE.md) and
-  [`src/application/CLAUDE.md`](../../src/application/CLAUDE.md); the run sequence is the table in
+- The rule this sets is in [`CODING_STANDARDS.md`](../../CODING_STANDARDS.md), and `pnpm test:docs` fails on a
+  step of `measureRun` imported outside `@domain`; what `measureRun` composes is in
+  [`src/domain/AGENTS.md`](../../src/domain/AGENTS.md), and the run sequence is the table in
   [`ARCHITECTURE.md`](../../ARCHITECTURE.md).

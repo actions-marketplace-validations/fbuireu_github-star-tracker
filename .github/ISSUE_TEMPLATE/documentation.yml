@@ -1,8 +1,8 @@
 name: Documentation Request
 description: Report a gap, a mistake or an improvement in the documentation
-title: '[Docs]: '
-labels: ['documentation', 'triage']
-assignees: ['fbuireu']
+title: "[Docs]: "
+labels: ["documentation", "triage"]
+assignees: ["fbuireu"]
 body:
   - type: markdown
     attributes:
@@ -15,8 +15,9 @@ body:
       description: Which document is it about?
       options:
         - README
-        - CLAUDE.md and ARCHITECTURE.md guides
-        - CONTEXT.md glossary
+        - AGENTS.md and ARCHITECTURE.md guides
+        - CODING_STANDARDS.md
+        - GLOSSARY.md glossary
         - An ADR
         - The wiki
         - CONTRIBUTING

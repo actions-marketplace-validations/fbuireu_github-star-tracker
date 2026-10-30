@@ -8,6 +8,13 @@ Accepted. Narrows the "the two renderers are independent" consequence of
 [ADR 0006](./0006-hand-rendered-svg-charts.md) and
 [ADR 0010](./0010-quickchart-renders-the-email-charts.md): a Chart's content is now decided once for both.
 
+> **Amended after this decision.** The exceptions the consequences below recorded are gone. The per-repository
+> titles read `report.repoChartTitle` and `forecast.repoChartTitle`, which carry the repository as `{name}`, and the
+> star-history and per-repository series are labelled `report.stars`, so every string a Chart carries is a bundle
+> key. The `< 2 snapshots` guard this ADR counted eight times is now written once, as `isPlottable` in
+> `chart-spec.ts`, which `buildChartSpec` asks at its top and `charts.ts` and `report-model.ts` ask as well, so all
+> of them give the same answer.
+
 ## Context
 
 The same Chart is rendered twice by design: hand-written SVG for the Data Branch
@@ -29,14 +36,14 @@ and was carried indirectly by the tracker's suite.
 
 Collapsing the two renderers into one was never an option; that is what ADR 0006 and ADR 0010 already
 rejected. Extracting only the small helpers (`selectChartSnapshots`, `movingAverageSeries`) had already been
-done, and it is precisely the part that did *not* drift. What drifted was everything built on top of them.
+done, and it is precisely the part that did _not_ drift. What drifted was everything built on top of them.
 
 ## Decision
 
 `@presentation/chart-spec` decides **what** a Chart is; the two renderers decide **how** it looks.
 
-A `ChartRequest` names *which* Chart is wanted: a discriminated union over the `ChartKind`s
-[CONTEXT.md](../../CONTEXT.md) already lists, each variant carrying only its own inputs. `buildChartSpec`
+A `ChartRequest` names _which_ Chart is wanted: a discriminated union over the `ChartKind`s
+[GLOSSARY.md](../../GLOSSARY.md) already lists, each variant carrying only its own inputs. `buildChartSpec`
 maps one onto a `ChartSpec` (axis labels, an ordered list of series with a resolved colour, and the
 Milestones to draw, each already filtered to the visible ones and carrying both its `value` and its rendered
 `label`), or onto `null` when there is too little history to plot. `starHistorySpec`, `perRepoSpec`,
@@ -53,7 +60,7 @@ now costs one union variant and one `case`.
 
 The dialect-specific facts stay in the adapters, because they are genuinely not shared: the SVG path
 geometry and animation, Chart.js option names, and the two defaults that differ. Where a difference is a
-*deliberate* one it is passed into the spec rather than hidden inside a renderer. `AxisLabels` picks
+_deliberate_ one it is passed into the spec rather than hidden inside a renderer. `AxisLabels` picks
 year-thinned labels for the SVG and plain dates for the email, and `maxPoints` is passed only on the SVG
 side, which is what keeps email charts fixed at 30 points.
 
@@ -69,16 +76,14 @@ a dash array or a point radius. Each adapter maps them through its own table.
   because leaving the label to the adapters is what let `chart.ts` format with a hardcoded `en-US` while
   `svg-chart.ts` used the run's Locale. Anything a reader reads is decided here; only how it is drawn is the
   adapter's.
-- That rule is not yet fully honoured, and the exceptions are in [`chart-spec.ts`](../../src/presentation/chart-spec.ts) itself. The `PER_REPO`
-  case of `buildChartSpec` falls back to an English title built inline from the repository's full name and
-  the words "Star History" rather than reading the Locale bundle, so a per-repository chart is titled in English whatever
-  `locale` is set to; the star-history and forecast kinds do read the bundle. Both `starHistorySpec` and
-  `perRepoSpec` also name their primary series `'Stars'` as a literal. Neither leaks to the adapters, so the
-  SVG and the email agree with each other, which is what this decision guarantees. They are simply agreed on
-  untranslated text, and a locale bug here is fixed in the spec, not in a renderer.
+- That rule has no exception. Every default title in [`chart-spec.ts`](../../src/presentation/chart-spec.ts) is a bundle key, the
+  per-repository ones with the repository as a `{name}` placeholder so a translation orders its words freely, and the
+  primary series is labelled from the bundle too. A locale bug in a Chart's text is fixed in the spec, not in a
+  renderer, and [`run.test.ts`](../../src/presentation/run.test.ts) renders a Run in each non-English Locale and
+  fails on an English phrase that slipped past the bundle.
 - A new chart kind is a `ChartRequest` variant plus a `case` in `buildChartSpec`, not two parallel
-  implementations, and neither adapter is touched. A new *style* option is one field on `ChartSpec` and one
-  line in each adapter; a new *content* option is one field on the request variant.
+  implementations, and neither adapter is touched. A new _style_ option is one field on `ChartSpec` and one
+  line in each adapter; a new _content_ option is one field on the request variant.
 - Default titles moved into `buildChartSpec`, so the SVG and the email chart of a kind are always named
   the same thing. The SVG star-history chart used to fall back to a hardcoded English `'Star History'` while
   the email one used the locale bundle.
@@ -95,4 +100,5 @@ a dash array or a point radius. Each adapter maps them through its own table.
   its data came from.
 - `charts.ts` now has a colocated [`charts.test.ts`](../../src/presentation/charts.test.ts), so the `Config`-to-style projection and the
   per-repo history fallback are asserted directly rather than through the tracker.
-- Where this bites is recorded in [`src/presentation/CLAUDE.md`](../../src/presentation/CLAUDE.md).
+- Where this bites is recorded in the _Presentation_ rules of [`CODING_STANDARDS.md`](../../CODING_STANDARDS.md) and in
+  [`src/presentation/AGENTS.md`](../../src/presentation/AGENTS.md).

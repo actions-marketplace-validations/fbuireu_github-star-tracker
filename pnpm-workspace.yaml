@@ -1,11 +1,8 @@
 packages:
   - ./
 savePrefix: ""
-minimumReleaseAge: 4320 # 3 days
+minimumReleaseAge: 4320
 blockExoticSubdeps: true
 allowBuilds:
   esbuild: true
   "@biomejs/biome": true
-minimumReleaseAgeExclude:
-  # Renovate security update: nodemailer@9.1.1
-  - nodemailer@9.1.1

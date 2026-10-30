@@ -3,10 +3,11 @@ import type { Config } from "@config/types";
 import { ChartTheme } from "@config/types";
 import type { ForecastData } from "@domain/forecast";
 import { ForecastMethod, ForecastSource } from "@domain/forecast";
-import { DOWN_ARROW, UP_ARROW } from "@domain/formatting";
+import { trendIcon } from "@domain/formatting";
 import type { StargazerDiffResult } from "@domain/stargazers";
 import type { History } from "@domain/types";
-import { makeComparisonResults, makeConfig, makeHistory, makeMultiRepoHistory } from "@shared/tests";
+import { LOCALES, type Locale } from "@i18n";
+import { makeComparisonResults, makeConfig, makeHistory, makeMultiRepoHistory, makeRepoResult } from "@shared/tests";
 import { describe, expect, it } from "vitest";
 import { COLORS, DARK_PALETTE, LIGHT_PALETTE } from "./constants";
 import { generateHtmlReport } from "./html";
@@ -15,11 +16,20 @@ import type { ReportParams } from "./shared";
 
 const QUICKCHART_CONFIG = /https:\/\/quickchart\.io\/chart\?[^"]*&c=([^"]+)/g;
 
-interface RenderHtml extends Partial<Omit<ReportParams, "config">> {
+interface DeltaCellParams {
+	color: string;
+	delta: string;
+}
+
+function deltaCell({ color, delta }: DeltaCellParams): RegExp {
+	return new RegExp(`color:${color};font-weight:600;">\\s*${delta.replace("+", "\\+")}\\s*</td>`);
+}
+
+interface RenderHtmlParams extends Partial<Omit<ReportParams, "config">> {
 	config?: Partial<Config>;
 }
 
-function renderHtml({ config, ...overrides }: RenderHtml = {}): string {
+function renderHtml({ config, ...overrides }: RenderHtmlParams = {}): string {
 	const resolved = makeConfig(config);
 
 	return generateHtmlReport({
@@ -27,7 +37,7 @@ function renderHtml({ config, ...overrides }: RenderHtml = {}): string {
 		model: buildReportModel({
 			config: resolved,
 			results: makeComparisonResults(),
-			previousTimestamp: "2026-01-01T00:00:00Z",
+			baselineSnapshotTimestamp: "2026-01-01T00:00:00Z",
 			chartHistories: overrides.history
 				? {
 						aggregate: overrides.history,
@@ -41,23 +51,17 @@ function renderHtml({ config, ...overrides }: RenderHtml = {}): string {
 }
 
 describe("generateHtmlReport", () => {
-	const velocityHistory = makeHistory([100, 200], { startMs: Date.UTC(2025, 0, 1), stepDays: 10 });
+	const velocityHistory = makeHistory({ starCounts: [100, 200], stepDays: 10 });
 
 	it("renders the velocity section when velocity-metrics is enabled", () => {
 		const html = renderHtml({ velocityHistory, config: { velocityMetrics: true } });
 
-		expect(html).toContain("Growth Velocity");
-		expect(html).toContain("Stars per day");
+		expect(html).toContain('<h2 style="font-size:18px;margin-bottom:12px;">🚀 Growth Velocity</h2>');
+		expect(html).toContain("<li><strong>Stars per day:</strong> 10</li>");
 	});
 
-	it("omits the velocity section by default", () => {
-		const html = renderHtml({ velocityHistory });
-
-		expect(html).not.toContain("Growth Velocity");
-	});
-
-	it("renders velocity with only the daily rate when growth and projection are unavailable", () => {
-		const flatHistory = makeHistory([0, 0], { startMs: Date.UTC(2025, 0, 1), stepDays: 10 });
+	it("renders velocity with only the daily rate when growth and the next Milestone are unavailable", () => {
+		const flatHistory = makeHistory({ starCounts: [0, 0], stepDays: 10 });
 
 		const html = renderHtml({ velocityHistory: flatHistory, config: { velocityMetrics: true } });
 
@@ -66,19 +70,15 @@ describe("generateHtmlReport", () => {
 		expect(html).not.toContain("Growth:</strong>");
 	});
 
-	it("shows negative growth without a plus sign", () => {
-		const decliningHistory = makeHistory([200, 150], {
-			startMs: Date.UTC(2025, 0, 1),
-			stepDays: 10,
-		});
+	it("colours shrinking growth with the negative colour", () => {
+		const decliningHistory = makeHistory({ starCounts: [200, 150], stepDays: 10 });
 
 		const html = renderHtml({
 			velocityHistory: decliningHistory,
 			config: { velocityMetrics: true },
 		});
 
-		expect(html).toContain("-25%");
-		expect(html).not.toContain("+-25%");
+		expect(html).toContain(`<span style="color:${COLORS.negative};">-25%</span>`);
 	});
 
 	it("nests velocity under the forecast section when both are present", () => {
@@ -135,32 +135,44 @@ describe("generateHtmlReport", () => {
 		expect(html).toContain('href="https://github.com/user/repo-a"');
 	});
 
-	it("uses green color for positive deltas", () => {
+	it("colours each Delta cell by its sign", () => {
 		const html = renderHtml();
 
-		expect(html).toContain(COLORS.positive);
-	});
-
-	it("uses red color for negative deltas", () => {
-		const html = renderHtml();
-
-		expect(html).toContain(COLORS.negative);
+		expect(html).toMatch(deltaCell({ color: COLORS.positive, delta: "+5" }));
+		expect(html).toMatch(deltaCell({ color: COLORS.negative, delta: "-2" }));
 	});
 
 	it("includes summary stats", () => {
 		const html = renderHtml();
 
-		expect(html).toContain("23");
+		expect(html).toContain(">23</div>");
 		expect(html).toContain("Total Stars");
 		expect(html).toContain("Net change");
+	});
+
+	const TOTAL_LABELS: { locale: Locale; label: string }[] = [
+		{ locale: "en", label: "Total Stars" },
+		{ locale: "es", label: "Estrellas totales" },
+		{ locale: "ca", label: "Estrelles totals" },
+		{ locale: "it", label: "Stelle totali" },
+	];
+
+	it.each(TOTAL_LABELS)("labels the total as one phrase of the bundle in $locale", ({ locale, label }) => {
+		const html = renderHtml({ config: { locale } });
+
+		expect(html).toContain(`>${label}</div>`);
+	});
+
+	it("states the total's label for every locale the bundles ship", () => {
+		expect(TOTAL_LABELS.map(({ locale }) => locale)).toEqual(LOCALES);
 	});
 
 	it("gives the repository table a trend column", () => {
 		const html = renderHtml();
 
 		expect(html).toContain(">Trend</th>");
-		expect(html).toContain(UP_ARROW);
-		expect(html).toContain(DOWN_ARROW);
+		expect(html).toContain(trendIcon(1));
+		expect(html).toContain(trendIcon(-1));
 	});
 
 	it("lists new repositories with their Star Count", () => {
@@ -208,9 +220,7 @@ describe("generateHtmlReport", () => {
 	});
 
 	it("includes charts when history has multiple snapshots", () => {
-		const history = makeMultiRepoHistory([{ "user/repo-a": 20 }, { "user/repo-a": 23 }], {
-			stepDays: 1,
-		});
+		const history = makeMultiRepoHistory({ snapshots: [{ "user/repo-a": 20 }, { "user/repo-a": 23 }], stepDays: 1 });
 
 		const html = renderHtml({ history, config: { includeCharts: true } });
 
@@ -219,13 +229,13 @@ describe("generateHtmlReport", () => {
 	});
 
 	it("includes comparison chart for top repositories", () => {
-		const history = makeMultiRepoHistory(
-			[
+		const history = makeMultiRepoHistory({
+			snapshots: [
 				{ "user/repo-a": 10, "user/repo-b": 10 },
 				{ "user/repo-a": 15, "user/repo-b": 10 },
 			],
-			{ stepDays: 1 },
-		);
+			stepDays: 1,
+		});
 
 		const html = renderHtml({ history, config: { includeCharts: true } });
 
@@ -234,13 +244,13 @@ describe("generateHtmlReport", () => {
 	});
 
 	it("includes individual repo charts section", () => {
-		const history = makeMultiRepoHistory(
-			[
+		const history = makeMultiRepoHistory({
+			snapshots: [
 				{ "user/repo-a": 10, "user/repo-b": 10 },
 				{ "user/repo-a": 15, "user/repo-b": 10 },
 			],
-			{ stepDays: 1 },
-		);
+			stepDays: 1,
+		});
 
 		const html = renderHtml({ history, config: { includeCharts: true } });
 
@@ -251,13 +261,13 @@ describe("generateHtmlReport", () => {
 	});
 
 	it("heads each individual repo chart with its Star Count and Delta", () => {
-		const history = makeMultiRepoHistory(
-			[
+		const history = makeMultiRepoHistory({
+			snapshots: [
 				{ "user/repo-a": 10, "user/repo-b": 10 },
 				{ "user/repo-a": 15, "user/repo-b": 8 },
 			],
-			{ stepDays: 1 },
-		);
+			stepDays: 1,
+		});
 
 		const html = renderHtml({ history, config: { includeCharts: true } });
 
@@ -268,14 +278,14 @@ describe("generateHtmlReport", () => {
 	});
 
 	it("applies chart-line-color to the star history, per-repo and forecast charts", () => {
-		const history = makeMultiRepoHistory(
-			[
+		const history = makeMultiRepoHistory({
+			snapshots: [
 				{ "user/repo-a": 10, "user/repo-b": 10 },
 				{ "user/repo-a": 15, "user/repo-b": 10 },
 				{ "user/repo-a": 22, "user/repo-b": 12 },
 			],
-			{ stepDays: 1 },
-		);
+			stepDays: 1,
+		});
 		const forecastData: ForecastData = {
 			aggregate: {
 				forecasts: [
@@ -300,9 +310,7 @@ describe("generateHtmlReport", () => {
 	});
 
 	it("applies chart-line-width to the email chart data lines", () => {
-		const history = makeMultiRepoHistory([{ "user/repo-a": 20 }, { "user/repo-a": 23 }], {
-			stepDays: 1,
-		});
+		const history = makeMultiRepoHistory({ snapshots: [{ "user/repo-a": 20 }, { "user/repo-a": 23 }], stepDays: 1 });
 		const configsOf = (html: string): string[] =>
 			[...html.matchAll(QUICKCHART_CONFIG)].map((match) => decodeURIComponent(match[1]));
 
@@ -311,25 +319,6 @@ describe("generateHtmlReport", () => {
 
 		expect(styled.every((config) => config.includes('"borderWidth":5'))).toBe(true);
 		expect(plain.every((config) => config.includes(`"borderWidth":${DEFAULTS.chartLineWidth}`))).toBe(true);
-	});
-
-	it("does not include charts when includeCharts is false", () => {
-		const history = makeMultiRepoHistory([{ "user/repo-a": 20 }, { "user/repo-a": 23 }], {
-			stepDays: 1,
-		});
-
-		const html = renderHtml({ history, config: { includeCharts: false } });
-
-		expect(html).not.toContain("Star Trend");
-		expect(html).not.toContain("quickchart.io");
-	});
-
-	it("does not include charts when history has only one snapshot", () => {
-		const history = makeMultiRepoHistory([{ "user/repo-a": 20 }]);
-
-		const html = renderHtml({ history, config: { includeCharts: true } });
-
-		expect(html).not.toContain("Star Trend");
 	});
 
 	it("includes stargazer section with avatars", () => {
@@ -408,12 +397,6 @@ describe("generateHtmlReport", () => {
 		expect(html).toContain("sampled repositories: user/huge, user/big");
 	});
 
-	it("excludes stargazer section when stargazerDiff is null", () => {
-		const html = renderHtml({ stargazerDiff: null });
-
-		expect(html).not.toContain("New Stargazers");
-	});
-
 	it("includes forecast section with tables", () => {
 		const forecastData: ForecastData = {
 			aggregate: {
@@ -472,7 +455,7 @@ describe("generateHtmlReport", () => {
 		expect(html).toContain("Linear Regression");
 		expect(html).toContain("Weighted Moving Average");
 		expect(html).toContain("Week 1");
-		expect(html).toContain("25");
+		expect(html).toContain('font-size:12px;">25</td>');
 		expect(html).toContain("By Repository");
 		expect(html).toContain("user/repo-a");
 		expect(html).not.toContain("<details>");
@@ -504,17 +487,17 @@ describe("generateHtmlReport", () => {
 			}),
 		});
 
-		expect(html).toContain(COLORS.neutral);
+		expect(html).toMatch(deltaCell({ color: COLORS.neutral, delta: "0" }));
 	});
 
 	it("embeds a per-repo forecast chart only when the run drew one", () => {
-		const history = makeMultiRepoHistory(
-			[
+		const history = makeMultiRepoHistory({
+			snapshots: [
 				{ "user/repo-a": 10, "user/repo-b": 10 },
 				{ "user/repo-a": 15, "user/repo-b": 10 },
 			],
-			{ stepDays: 1 },
-		);
+			stepDays: 1,
+		});
 		const forecastData: ForecastData = {
 			aggregate: {
 				forecasts: [{ method: ForecastMethod.LINEAR_REGRESSION, points: [{ weekOffset: 1, predicted: 25 }] }],
@@ -543,50 +526,42 @@ describe("generateHtmlReport", () => {
 		expect(undrawn).toContain("By Repository");
 	});
 
-	it("renders a translated label for every forecast method", () => {
-		const forecastData: ForecastData = {
-			aggregate: {
-				forecasts: [
-					{
-						method: ForecastMethod.LINEAR_REGRESSION,
-						points: [
-							{ weekOffset: 1, predicted: 25 },
-							{ weekOffset: 2, predicted: 27 },
-							{ weekOffset: 3, predicted: 29 },
-							{ weekOffset: 4, predicted: 31 },
-						],
-					},
-					{
-						method: ForecastMethod.WEIGHTED_MOVING_AVERAGE,
-						points: [
-							{ weekOffset: 1, predicted: 24 },
-							{ weekOffset: 2, predicted: 26 },
-							{ weekOffset: 3, predicted: 28 },
-							{ weekOffset: 4, predicted: 30 },
-						],
-					},
-				],
-			},
-			repos: [],
-		};
-
-		const html = renderHtml({ forecastData });
-
-		expect(html).toContain("Linear Regression");
-		expect(html).toContain("Weighted Moving Average");
-		expect(html).not.toContain(ForecastMethod.LINEAR_REGRESSION);
-		expect(html).not.toContain(ForecastMethod.WEIGHTED_MOVING_AVERAGE);
-	});
-
-	it("excludes forecast section when forecastData is null", () => {
-		const html = renderHtml({ forecastData: null });
-
-		expect(html).not.toContain("Growth Forecast");
-	});
-
 	it("includes explicit background-color on body", () => {
 		const html = renderHtml();
 
 		expect(html).toContain(`background-color:${COLORS.white}`);
+	});
+
+	it("escapes every GitHub-sourced string it prints", () => {
+		const fullName = "user/repo<b>";
+		const forecasts = [{ method: ForecastMethod.LINEAR_REGRESSION, points: [{ weekOffset: 1, predicted: 20 }] }];
+
+		const html = renderHtml({
+			results: makeComparisonResults({
+				repos: [
+					makeRepoResult({ name: "repo<b>", overrides: { current: 15, previous: 10, delta: 5 } }),
+					makeRepoResult({ name: "gone<b>", overrides: { current: 0, previous: 3, delta: -3, isRemoved: true } }),
+				],
+			}),
+			history: makeMultiRepoHistory({ snapshots: [{ [fullName]: 10 }, { [fullName]: 15 }], stepDays: 1 }),
+			stargazerDiff: {
+				entries: [
+					{
+						repoFullName: fullName,
+						newStargazers: [{ login: "<b>", avatarUrl: "<b>", profileUrl: "<b>", starredAt: "<b>" }],
+					},
+				],
+				totalNew: 1,
+				sampledRepos: [fullName],
+			},
+			forecastData: {
+				aggregate: { forecasts },
+				repos: [{ repoFullName: fullName, source: ForecastSource.OWN, forecasts }],
+			},
+			config: { includeCharts: true },
+		});
+
+		expect(html).toContain("user/repo&lt;b&gt;");
+		expect(html).not.toContain("<b>");
 	});
 });

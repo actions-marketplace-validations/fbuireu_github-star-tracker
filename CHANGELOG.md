@@ -1,3 +1,73 @@
+## [1.28.8](https://github.com/fbuireu/github-star-tracker/compare/v1.28.7...v1.28.8) (2026-10-24)
+
+
+### Bug Fixes
+
+* **deps:** update dependency nodemailer to v10.1.4 [security] ([#209](https://github.com/fbuireu/github-star-tracker/issues/209)) ([921734b](https://github.com/fbuireu/github-star-tracker/commit/921734b8685c4f754b87fbe71f89e20f140e2a22))
+
+## [1.28.7](https://github.com/fbuireu/github-star-tracker/compare/v1.28.6...v1.28.7) (2026-10-15)
+
+
+### Bug Fixes
+
+* **deps:** update dependency nodemailer to v10.1.0 ([#207](https://github.com/fbuireu/github-star-tracker/issues/207)) ([0c68af8](https://github.com/fbuireu/github-star-tracker/commit/0c68af8b8afa6243525942810d2771721696d437))
+
+## [1.28.6](https://github.com/fbuireu/github-star-tracker/compare/v1.28.5...v1.28.6) (2026-10-15)
+
+
+### Bug Fixes
+
+* **deps:** update dependency zod to v4.6.6 ([#206](https://github.com/fbuireu/github-star-tracker/issues/206)) ([30e7020](https://github.com/fbuireu/github-star-tracker/commit/30e70203ff2303d726eac07c7017e5a8e66ff5a7))
+
+## [1.28.5](https://github.com/fbuireu/github-star-tracker/compare/v1.28.4...v1.28.5) (2026-10-15)
+
+
+### Bug Fixes
+
+* **deps:** update dependency js-yaml to v5.4.3 ([#203](https://github.com/fbuireu/github-star-tracker/issues/203)) ([1dfa5cc](https://github.com/fbuireu/github-star-tracker/commit/1dfa5ccaf02b504c97456e122fb84b504166b62f))
+
+## [1.28.4](https://github.com/fbuireu/github-star-tracker/compare/v1.28.3...v1.28.4) (2026-10-10)
+
+
+### Bug Fixes
+
+* write the Spanish, Catalan and Italian bundles in their own conventions ([4ac555d](https://github.com/fbuireu/github-star-tracker/commit/4ac555de02418648f7f9323e29ca693653efad7d))
+
+## [1.28.3](https://github.com/fbuireu/github-star-tracker/compare/v1.28.2...v1.28.3) (2026-10-05)
+
+
+### Bug Fixes
+
+* close every known inconsistency and pin the Chart.js version email charts are written for ([328796c](https://github.com/fbuireu/github-star-tracker/commit/328796cd37db9130763494f14b4dc666c4038f24))
+
+## [1.28.2](https://github.com/fbuireu/github-star-tracker/compare/v1.28.1...v1.28.2) (2026-10-02)
+
+
+### Bug Fixes
+
+* write down the coding standards and fix what reviewing against them found ([016ad0c](https://github.com/fbuireu/github-star-tracker/commit/016ad0cbd19a83ffcc62b42cde1df9c0476ba989))
+
+## [1.28.1](https://github.com/fbuireu/github-star-tracker/compare/v1.28.0...v1.28.1) (2026-10-01)
+
+
+### Bug Fixes
+
+* **deps:** update dependency nodemailer to v10.0.11 ([#197](https://github.com/fbuireu/github-star-tracker/issues/197)) ([d51e5fa](https://github.com/fbuireu/github-star-tracker/commit/d51e5faf7da239d164b2c36705ff2fc9a582f6d1))
+
+# [1.28.0](https://github.com/fbuireu/github-star-tracker/compare/v1.27.5...v1.28.0) (2026-09-30)
+
+
+### Features
+
+* validate the stored history, GitHub responses and config with zod mini ([fab9fb8](https://github.com/fbuireu/github-star-tracker/commit/fab9fb8431dd4f1700abdb2087b08b0e8e8b90dc))
+
+## [1.27.5](https://github.com/fbuireu/github-star-tracker/compare/v1.27.4...v1.27.5) (2026-09-24)
+
+
+### Bug Fixes
+
+* self-repo ([abea558](https://github.com/fbuireu/github-star-tracker/commit/abea55833958da3975f62d33b5f011dd0134255b))
+
 ## [1.27.4](https://github.com/fbuireu/github-star-tracker/compare/v1.27.3...v1.27.4) (2026-09-15)
 
 

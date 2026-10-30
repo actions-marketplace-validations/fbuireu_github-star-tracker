@@ -10,21 +10,30 @@ Real-world workflow configurations for common use cases. For rendered chart outp
 name: Track Stars
 on:
   schedule:
-    - cron: '0 0 * * *'
+    - cron: "0 0 * * *"
   workflow_dispatch:
 
 permissions:
   contents: write
 
+concurrency:
+  group: star-tracker
+  cancel-in-progress: false
+
 jobs:
   track:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
-      - uses: fbuireu/github-star-tracker@v1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Track stars
+        id: tracker
+        uses: fbuireu/github-star-tracker@v1
         with:
           github-token: ${{ secrets.STAR_TRACKER_TOKEN }}
 ```
+
+`concurrency` queues a manual run behind a scheduled one rather than letting two writing runs overlap and the second
+one's push be refused. The shorter snippets below are steps of a workflow shaped like this one.
 
 ### Public Repositories Only
 
@@ -32,7 +41,7 @@ jobs:
 - uses: fbuireu/github-star-tracker@v1
   with:
     github-token: ${{ secrets.STAR_TRACKER_TOKEN }}
-    visibility: 'public'
+    visibility: "public"
 ```
 
 ### Only Repos You Own
@@ -43,7 +52,7 @@ Excludes repos where you're a collaborator:
 - uses: fbuireu/github-star-tracker@v1
   with:
     github-token: ${{ secrets.STAR_TRACKER_TOKEN }}
-    visibility: 'owned'
+    visibility: "owned"
 ```
 
 ### Spanish Reports with Charts
@@ -52,7 +61,7 @@ Excludes repos where you're a collaborator:
 - uses: fbuireu/github-star-tracker@v1
   with:
     github-token: ${{ secrets.STAR_TRACKER_TOKEN }}
-    locale: 'es'
+    locale: "es"
     include-charts: true
 ```
 
@@ -66,7 +75,7 @@ Excludes repos where you're a collaborator:
 - uses: fbuireu/github-star-tracker@v1
   with:
     github-token: ${{ secrets.STAR_TRACKER_TOKEN }}
-    min-stars: '10'
+    min-stars: "10"
 ```
 
 ### Exclude Specific Repos
@@ -75,7 +84,7 @@ Excludes repos where you're a collaborator:
 - uses: fbuireu/github-star-tracker@v1
   with:
     github-token: ${{ secrets.STAR_TRACKER_TOKEN }}
-    exclude-repos: 'archived-repo,test-project'
+    exclude-repos: "archived-repo,test-project"
 ```
 
 ### Exclude by Regex Pattern
@@ -84,7 +93,7 @@ Excludes repos where you're a collaborator:
 - uses: fbuireu/github-star-tracker@v1
   with:
     github-token: ${{ secrets.STAR_TRACKER_TOKEN }}
-    exclude-repos: '/^test-.*/, /^demo-.*/, old-project'
+    exclude-repos: "/^test-.*/, /^demo-.*/, old-project"
 ```
 
 ### Track Specific Repos Only
@@ -93,7 +102,7 @@ Excludes repos where you're a collaborator:
 - uses: fbuireu/github-star-tracker@v1
   with:
     github-token: ${{ secrets.STAR_TRACKER_TOKEN }}
-    only-repos: 'my-awesome-project,another-repo'
+    only-repos: "my-awesome-project,another-repo"
 ```
 
 ### Include Archived and Forks
@@ -116,7 +125,7 @@ Excludes repos where you're a collaborator:
 - uses: fbuireu/github-star-tracker@v1
   with:
     github-token: ${{ secrets.GHES_TOKEN }}
-    github-api-url: 'https://github.example.com/api/v3'
+    github-api-url: "https://github.example.com/api/v3"
 ```
 
 ### Auto-detected on GHES Runner
@@ -135,9 +144,9 @@ When the workflow runs on a GHES runner, the API URL is auto-detected from the `
 - uses: fbuireu/github-star-tracker@v1
   with:
     github-token: ${{ secrets.GHES_TOKEN }}
-    github-api-url: 'https://github.example.com/api/v3'
+    github-api-url: "https://github.example.com/api/v3"
     smtp-host: smtp.example.com
-    smtp-port: '587'
+    smtp-port: "587"
     smtp-username: ${{ secrets.EMAIL_FROM }}
     smtp-password: ${{ secrets.EMAIL_PASSWORD }}
     email-from: ${{ secrets.EMAIL_FROM }}
@@ -155,7 +164,7 @@ When the workflow runs on a GHES runner, the API URL is auto-detected from the `
   with:
     github-token: ${{ secrets.STAR_TRACKER_TOKEN }}
     smtp-host: smtp.gmail.com
-    smtp-port: '587'
+    smtp-port: "587"
     smtp-username: ${{ secrets.EMAIL_FROM }}
     smtp-password: ${{ secrets.EMAIL_PASSWORD }}
     email-from: ${{ secrets.EMAIL_FROM }}
@@ -175,9 +184,9 @@ Email once per 500 stars gained, not once per day. `notification-threshold` accu
   uses: fbuireu/github-star-tracker@v1
   with:
     github-token: ${{ secrets.STAR_TRACKER_TOKEN }}
-    notification-threshold: '500'
-    notification-mode: 'gains'
-    compare-against: '30d'
+    notification-threshold: "500"
+    notification-mode: "gains"
+    compare-against: "30d"
 
 - name: Send email every 500 stars
   if: steps.tracker.outputs.should-notify == 'true'
@@ -187,10 +196,10 @@ Email once per 500 stars gained, not once per day. `notification-threshold` accu
     server_port: 587
     username: ${{ secrets.EMAIL_FROM }}
     password: ${{ secrets.EMAIL_PASSWORD }}
-    subject: '⭐ Milestone reached: ${{ steps.tracker.outputs.total-stars }} stars'
+    subject: "⭐ Milestone reached: ${{ steps.tracker.outputs.total-stars }} stars"
     to: ${{ secrets.EMAIL_TO }}
     from: GitHub Star Tracker
-    html_body_file: ${{ steps.tracker.outputs.report-html-path }}
+    html_body: file://${{ steps.tracker.outputs.report-html-path }}
 ```
 
 Gate on `should-notify`, never on `new-stars >= 500`: the latter demands 500 stars inside one run and
@@ -211,24 +220,28 @@ Track daily so the history stays dense for velocity, but compare against a snaps
 name: Weekly Star Digest
 on:
   schedule:
-    - cron: '0 9 * * 1'      # Monday - track and send the digest
-    - cron: '0 9 * * 0,2-6'  # other days - track only
+    - cron: "0 9 * * 1" # Monday - track and send the digest
+    - cron: "0 9 * * 0,2-6" # other days - track only
   workflow_dispatch:
 
 permissions:
   contents: write
 
+concurrency:
+  group: star-tracker
+  cancel-in-progress: false
+
 jobs:
   digest:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Track stars
         id: tracker
         uses: fbuireu/github-star-tracker@v1
         with:
           github-token: ${{ secrets.STAR_TRACKER_TOKEN }}
-          compare-against: '7d'
+          compare-against: "7d"
           include-charts: true
 
       - name: Send weekly digest
@@ -239,10 +252,10 @@ jobs:
           server_port: 587
           username: ${{ secrets.EMAIL_FROM }}
           password: ${{ secrets.EMAIL_PASSWORD }}
-          subject: '⭐ This week: ${{ steps.tracker.outputs.total-stars }} stars (+${{ steps.tracker.outputs.new-stars }})'
+          subject: "⭐ This week: ${{ steps.tracker.outputs.total-stars }} stars (+${{ steps.tracker.outputs.new-stars }})"
           to: ${{ secrets.EMAIL_TO }}
           from: GitHub Star Tracker
-          html_body_file: ${{ steps.tracker.outputs.report-html-path }}
+          html_body: file://${{ steps.tracker.outputs.report-html-path }}
 ```
 
 ### Read-Only Digest on a Shared Data Branch
@@ -251,19 +264,18 @@ The counterpart of the workflow above: this one **reads** a data branch another 
 builds the report, sets every output and sends the email, but never commits, so the two cannot race to push.
 
 ```yaml
-- uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+- uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 - name: Build the digest
   id: tracker
   uses: fbuireu/github-star-tracker@v1
   with:
     github-token: ${{ secrets.STAR_TRACKER_TOKEN }}
-    data-branch: star-tracker-data   # the branch your tracking workflow writes
+    data-branch: star-tracker-data # the branch your tracking workflow writes
     read-only: true
-    compare-against: '7d'
+    compare-against: "7d"
 ```
 
 Things to get right:
-
 - The job needs only `permissions: contents: read`. Nothing is pushed.
 - The branch must already exist. A read-only run refuses to create one and fails the job.
 - Leave `notification-threshold` at `0` and gate the mailer on `stars-changed`. The threshold's counter
@@ -278,9 +290,9 @@ Things to get right:
 - uses: fbuireu/github-star-tracker@v1
   with:
     github-token: ${{ secrets.STAR_TRACKER_TOKEN }}
-    notification-threshold: 'auto'
+    notification-threshold: "auto"
     smtp-host: smtp.gmail.com
-    smtp-port: '587'
+    smtp-port: "587"
     smtp-username: ${{ secrets.EMAIL_FROM }}
     smtp-password: ${{ secrets.EMAIL_PASSWORD }}
     email-from: ${{ secrets.EMAIL_FROM }}
@@ -406,8 +418,8 @@ subset of pages instead of all of them, for repositories above a threshold:
   with:
     github-token: ${{ secrets.STAR_TRACKER_TOKEN }}
     smart-sampling: true
-    smart-sampling-threshold: '1500'  # only repos strictly above this are sampled
-    smart-sampling-pages: '30'        # pages to read from each sampled repo
+    smart-sampling-threshold: "1500" # only repos strictly above this are sampled
+    smart-sampling-pages: "30" # pages to read from each sampled repo
 ```
 
 The trade-off is a coarser curve for those repositories and **no new-stargazer detection** for them, since
@@ -420,7 +432,7 @@ absence from a sample is not evidence. Repositories below the threshold are unaf
 - uses: fbuireu/github-star-tracker@v1
   with:
     github-token: ${{ secrets.STAR_TRACKER_TOKEN }}
-    data-branch: 'my-star-data'
+    data-branch: "my-star-data"
 ```
 
 ### Extended History (2 Years)
@@ -429,7 +441,7 @@ absence from a sample is not evidence. Repositories below the threshold are unaf
 - uses: fbuireu/github-star-tracker@v1
   with:
     github-token: ${{ secrets.STAR_TRACKER_TOKEN }}
-    max-history: '104'
+    max-history: "104"
 ```
 
 ### Top 5 Repos in Charts
@@ -438,7 +450,7 @@ absence from a sample is not evidence. Repositories below the threshold are unaf
 - uses: fbuireu/github-star-tracker@v1
   with:
     github-token: ${{ secrets.STAR_TRACKER_TOKEN }}
-    top-repos: '5'
+    top-repos: "5"
 ```
 
 ### Customized Charts
@@ -450,14 +462,14 @@ Tune the chart appearance: the curve style, theme, colors, milestones, trend lin
   with:
     github-token: ${{ secrets.STAR_TRACKER_TOKEN }}
     include-charts: true
-    chart-curve: monotone              # monotone | catmull-rom | cubic-bezier | rounded-step
-    chart-theme: dark                  # auto | light | dark
-    chart-line-color: '6b63ff'         # drop the # (a bare # starts a YAML comment) or quote it
-    chart-line-width: '3'
+    chart-curve: monotone # monotone | catmull-rom | cubic-bezier | rounded-step
+    chart-theme: dark # auto | light | dark
+    chart-line-color: "6b63ff" # drop the # (a bare # starts a YAML comment) or quote it
+    chart-line-width: "3"
     chart-milestones: true
-    chart-custom-milestones: '250, 750, 2500'
+    chart-custom-milestones: "250, 750, 2500"
     chart-trend-line: true
-    chart-range: 1y                    # 30d | 90d | 1y | all
+    chart-range: 1y # 30d | 90d | 1y | all
     chart-begin-at-zero: false
 ```
 
@@ -467,7 +479,7 @@ Tune the chart appearance: the curve style, theme, colors, milestones, trend lin
 - uses: fbuireu/github-star-tracker@v1
   with:
     github-token: ${{ secrets.STAR_TRACKER_TOKEN }}
-    config-path: '.github/star-tracker.yml'
+    config-path: ".github/star-tracker.yml"
 ```
 
 With `.github/star-tracker.yml`:
@@ -496,21 +508,21 @@ compare_against: 7d
 - uses: fbuireu/github-star-tracker@v1
   with:
     github-token: ${{ secrets.STAR_TRACKER_TOKEN }}
-    visibility: 'public'
+    visibility: "public"
     include-archived: false
     include-forks: false
-    min-stars: '5'
-    locale: 'en'
+    min-stars: "5"
+    locale: "en"
     include-charts: true
     chart-curve: monotone
     chart-theme: auto
     chart-trend-line: true
     track-stargazers: true
-    top-repos: '5'
-    max-history: '52'
-    notification-threshold: 'auto'
-    notification-mode: 'gains'
-    compare-against: 'last-run'
+    top-repos: "5"
+    max-history: "52"
+    notification-threshold: "auto"
+    notification-mode: "gains"
+    compare-against: "last-run"
     velocity-metrics: true
     send-on-no-changes: false
     # Plus the SMTP block for the built-in mailer:

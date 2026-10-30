@@ -1,5 +1,5 @@
 import type { ForecastResult } from "@domain/forecast";
-import { deltaIndicator, formatSignedPercent, trendIcon } from "@domain/formatting";
+import { deltaIndicator, formatSignedPercent, isoDate, trendIcon } from "@domain/formatting";
 import { getTranslations, interpolate, type Translations } from "@i18n";
 import { CHART_FILES, SECTION_ICON } from "./constants";
 import { EscapeDialect, escapeFor } from "./escaping";
@@ -28,7 +28,16 @@ function repoChartHeading({ repo, t }: RepoChartHeadingParams): string {
 
 export function generateMarkdownReport({ model, config }: RenderReportParams): string {
 	const t = getTranslations(config.locale);
-	const { summary, sorted, newRepos, removedRepos, now, prev, chartHistory, forecast: forecastData } = model;
+	const {
+		summary,
+		sorted,
+		newRepos,
+		removedRepos,
+		now,
+		baselineSnapshotDate,
+		chartHistory,
+		forecast: forecastData,
+	} = model;
 
 	const header = [
 		`# ${t.report.title}`,
@@ -39,14 +48,14 @@ export function generateMarkdownReport({ model, config }: RenderReportParams): s
 
 	const comparison = model.isFirstRun
 		? []
-		: [`> ${interpolate({ template: t.report.comparedTo, params: { date: prev } })}`, ""];
+		: [`> ${interpolate({ template: t.report.comparedTo, params: { date: baselineSnapshotDate } })}`, ""];
 
 	const hasComparisonChart = model.showComparisonChart;
 
 	const individualRepoCharts = model.perRepoCharts.flatMap((repo) => [
 		`#### ${repoChartHeading({ repo, t })}`,
 		"",
-		`![${escapeMarkdown(repo.fullName)}](./charts/${perRepoChartFile(repo.fullName)})`,
+		`![${escapeMarkdown(repo.fullName)}](./charts/${escapeMarkdown(perRepoChartFile(repo.fullName))})`,
 		"",
 	]);
 
@@ -55,7 +64,7 @@ export function generateMarkdownReport({ model, config }: RenderReportParams): s
 			? [
 					`## ${SECTION_ICON.starTrend} ${t.report.starTrend}`,
 					"",
-					`![Star History](./charts/${CHART_FILES.starHistory})`,
+					`![${t.report.starHistory}](./charts/${CHART_FILES.starHistory})`,
 					"",
 					...(hasComparisonChart
 						? [
@@ -78,20 +87,17 @@ export function generateMarkdownReport({ model, config }: RenderReportParams): s
 				]
 			: [];
 
-	const repoTable =
-		sorted.length > 0
-			? [
-					`## ${t.report.repositories}`,
-					"",
-					`| ${t.report.repositories} | ${t.report.stars} | ${t.report.change} | ${t.report.trend} |`,
-					"|:-----------|------:|-------:|:-----:|",
-					...sorted.map((repo) => {
-						const badge = repo.isNew ? ` \`${t.report.badges.new}\`` : "";
-						return `| [${escapeMarkdown(repo.fullName)}](https://github.com/${escapeMarkdown(repo.fullName)})${badge} | ${repo.current} | ${deltaIndicator(repo.delta)} | ${trendIcon(repo.delta)} |`;
-					}),
-					"",
-				]
-			: [];
+	const repoTable = [
+		`## ${t.report.repositories}`,
+		"",
+		`| ${t.report.repositories} | ${t.report.stars} | ${t.report.change} | ${t.report.trend} |`,
+		"|:-----------|------:|-------:|:-----:|",
+		...sorted.map((repo) => {
+			const badge = repo.isNew ? ` \`${t.report.badges.new}\`` : "";
+			return `| [${escapeMarkdown(repo.fullName)}](https://github.com/${escapeMarkdown(repo.fullName)})${badge} | ${repo.current} | ${deltaIndicator(repo.delta)} | ${trendIcon(repo.delta)} |`;
+		}),
+		"",
+	];
 
 	const newSection =
 		newRepos.length > 0
@@ -121,17 +127,14 @@ export function generateMarkdownReport({ model, config }: RenderReportParams): s
 				]
 			: [];
 
-	const summarySection =
-		summary.totalDelta === 0
-			? []
-			: [
-					`## ${t.report.summary}`,
-					"",
-					`- **${t.report.starsGained}:** ${summary.newStars}`,
-					`- **${t.report.starsLost}:** ${summary.lostStars}`,
-					`- **${t.report.netChange}:** ${deltaIndicator(summary.totalDelta)}`,
-					"",
-				];
+	const summarySection = [
+		`## ${t.report.summary}`,
+		"",
+		`- **${t.report.starsGained}:** ${summary.newStars}`,
+		`- **${t.report.starsLost}:** ${summary.lostStars}`,
+		`- **${t.report.netChange}:** ${deltaIndicator(summary.totalDelta)}`,
+		"",
+	];
 
 	const stargazers = model.stargazers;
 	const sampledNote =
@@ -139,7 +142,7 @@ export function generateMarkdownReport({ model, config }: RenderReportParams): s
 			? [
 					interpolate({
 						template: t.stargazers.sampledNote,
-						params: { repos: stargazers.sampledRepos.join(", ") },
+						params: { repos: stargazers.sampledRepos.map(escapeMarkdown).join(", ") },
 					}),
 					"",
 				]
@@ -162,7 +165,7 @@ export function generateMarkdownReport({ model, config }: RenderReportParams): s
 						"",
 						...entry.newStargazers.map(
 							(stargazer) =>
-								`- <img src="${escapeMarkup(stargazer.avatarUrl)}" width="20" height="20" style="border-radius:50%;vertical-align:middle;"> [${escapeMarkdown(stargazer.login)}](${escapeMarkdown(stargazer.profileUrl)}): ${interpolate({ template: t.stargazers.starredOn, params: { date: stargazer.starredAt.split("T")[0] } })}`,
+								`- <img src="${escapeMarkup(stargazer.avatarUrl)}" width="20" height="20" style="border-radius:50%;vertical-align:middle;"> [${escapeMarkdown(stargazer.login)}](${escapeMarkdown(stargazer.profileUrl)}): ${interpolate({ template: t.stargazers.starredOn, params: { date: escapeMarkdown(isoDate(stargazer.starredAt)) } })}`,
 						),
 						"",
 						"</details>",
@@ -186,9 +189,9 @@ export function generateMarkdownReport({ model, config }: RenderReportParams): s
 				...(velocity.growthPercent !== null
 					? [`- **${t.velocity.growth}:** ${formatSignedPercent(velocity.growthPercent)}`]
 					: []),
-				...(velocity.projection
+				...(velocity.nextMilestone
 					? [
-							`- ${interpolate({ template: t.velocity.projection, params: { days: velocity.projection.days, milestone: velocity.projection.milestone } })}`,
+							`- ${interpolate({ template: t.velocity.projection, params: { days: velocity.nextMilestone.days, milestone: velocity.nextMilestone.milestone } })}`,
 						]
 					: []),
 			]
@@ -216,14 +219,14 @@ export function generateMarkdownReport({ model, config }: RenderReportParams): s
 								`<summary>${escapeMarkup(repo.repoFullName)}</summary>`,
 								"",
 								renderForecastTable({
-									title: repo.repoFullName,
+									title: escapeMarkdown(repo.repoFullName),
 									forecasts: repo.forecasts,
 									t,
 								}),
 								"",
 								...(repo.chartHistory !== null
 									? [
-											`![${escapeMarkdown(repo.repoFullName)}](./charts/${perRepoForecastChartFile(repo.repoFullName)})`,
+											`![${escapeMarkdown(repo.repoFullName)}](./charts/${escapeMarkdown(perRepoForecastChartFile(repo.repoFullName))})`,
 											"",
 										]
 									: []),

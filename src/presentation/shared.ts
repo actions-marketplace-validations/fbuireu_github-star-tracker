@@ -2,6 +2,7 @@ import { type ChartCurve, type ChartRange, ChartTheme, type Config } from "@conf
 import { rankByStars } from "@domain/comparison";
 import { FORECAST_WEEKS } from "@domain/constants";
 import { type ForecastData, ForecastMethod } from "@domain/forecast";
+import { isoDate } from "@domain/formatting";
 import type { StargazerDiffResult } from "@domain/stargazers";
 import type { ComparisonResults, History, RepoResult } from "@domain/types";
 import { getTranslations, interpolate, type Locale, type Translations } from "@i18n";
@@ -12,7 +13,7 @@ import type { ChartHistories, ColorPalette } from "./types";
 export interface ReportParams {
 	config: Config;
 	results: ComparisonResults;
-	previousTimestamp: string | null;
+	baselineSnapshotTimestamp: string | null;
 	history?: History | null;
 	velocityHistory?: History | null;
 	stargazerDiff?: StargazerDiffResult | null;
@@ -53,7 +54,7 @@ const THEME_CONFIG: Record<ChartTheme, { palette: ColorPalette; colorScheme: str
 	[ChartTheme.DARK]: { palette: DARK_PALETTE, colorScheme: ChartTheme.DARK },
 };
 
-export function resolvePalette(theme: ChartTheme = ChartTheme.AUTO): ColorPalette {
+export function resolvePalette(theme: ChartTheme): ColorPalette {
 	return THEME_CONFIG[theme].palette;
 }
 
@@ -67,21 +68,21 @@ export interface ReportData {
 	removedRepos: RepoResult[];
 	sorted: RepoResult[];
 	now: string;
-	prev: string;
+	baselineSnapshotDate: string;
 	isFirstRun: boolean;
 	generatedAt: string;
 }
 
-export interface PrepareReportDataParams {
+interface PrepareReportDataParams {
 	results: ComparisonResults;
-	previousTimestamp: string | null;
+	baselineSnapshotTimestamp: string | null;
 	locale: Locale;
 	now?: Date;
 }
 
 export function prepareReportData({
 	results,
-	previousTimestamp,
+	baselineSnapshotTimestamp,
 	locale,
 	now = new Date(),
 }: PrepareReportDataParams): ReportData {
@@ -94,9 +95,9 @@ export function prepareReportData({
 		newRepos: repos.filter((repo) => repo.isNew),
 		removedRepos: repos.filter((repo) => repo.isRemoved),
 		sorted: rankByStars(repos),
-		now: generatedAt.split("T")[0],
-		prev: previousTimestamp ? previousTimestamp.split("T")[0] : t.report.firstRun,
-		isFirstRun: previousTimestamp === null,
+		now: isoDate(generatedAt),
+		baselineSnapshotDate: baselineSnapshotTimestamp ? isoDate(baselineSnapshotTimestamp) : t.report.firstRun,
+		isFirstRun: baselineSnapshotTimestamp === null,
 		generatedAt,
 	};
 }

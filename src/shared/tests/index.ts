@@ -11,7 +11,7 @@ export function makeConfig(overrides: Partial<Config> = {}): Config {
 	return { ...DEFAULTS, ...overrides };
 }
 
-export interface MakeRepoInfoParams {
+interface MakeRepoInfoParams {
 	name: string;
 	stars?: number;
 	overrides?: Partial<RepoInfo>;
@@ -62,7 +62,7 @@ export function makeStargazerSeries({
 	);
 }
 
-export interface MakeSnapshotParams {
+interface MakeSnapshotParams {
 	timestamp: string;
 	totalStars: number;
 	repos?: SnapshotRepo[];
@@ -73,14 +73,16 @@ export function makeSnapshot({ timestamp, totalStars, repos = [] }: MakeSnapshot
 }
 
 interface MakeHistoryParams {
+	starCounts: number[];
 	startMs?: number;
 	stepDays?: number;
 }
 
-export function makeHistory(
-	starCounts: number[],
-	{ startMs = DEFAULT_SERIES_START, stepDays = DEFAULT_HISTORY_STEP_DAYS }: MakeHistoryParams = {},
-): History {
+export function makeHistory({
+	starCounts,
+	startMs = DEFAULT_SERIES_START,
+	stepDays = DEFAULT_HISTORY_STEP_DAYS,
+}: MakeHistoryParams): History {
 	return {
 		snapshots: starCounts.map((totalStars, index) =>
 			makeSnapshot({ timestamp: new Date(startMs + index * stepDays * MS_PER_DAY).toISOString(), totalStars }),
@@ -88,7 +90,7 @@ export function makeHistory(
 	};
 }
 
-export interface MakeMultiRepoSnapshotParams {
+interface MakeMultiRepoSnapshotParams {
 	timestamp: string;
 	repoStars: Record<string, number>;
 }
@@ -108,10 +110,17 @@ export function makeMultiRepoSnapshot({ timestamp, repoStars }: MakeMultiRepoSna
 	};
 }
 
-export function makeMultiRepoHistory(
-	snapshots: Record<string, number>[],
-	{ startMs = DEFAULT_SERIES_START, stepDays = DEFAULT_HISTORY_STEP_DAYS }: MakeHistoryParams = {},
-): History {
+interface MakeMultiRepoHistoryParams {
+	snapshots: Record<string, number>[];
+	startMs?: number;
+	stepDays?: number;
+}
+
+export function makeMultiRepoHistory({
+	snapshots,
+	startMs = DEFAULT_SERIES_START,
+	stepDays = DEFAULT_HISTORY_STEP_DAYS,
+}: MakeMultiRepoHistoryParams): History {
 	return {
 		snapshots: snapshots.map((repoStars, index) =>
 			makeMultiRepoSnapshot({ timestamp: new Date(startMs + index * stepDays * MS_PER_DAY).toISOString(), repoStars }),
@@ -119,7 +128,7 @@ export function makeMultiRepoHistory(
 	};
 }
 
-export interface MakeRepoResultParams {
+interface MakeRepoResultParams {
 	name: string;
 	overrides?: Partial<RepoResult>;
 }

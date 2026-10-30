@@ -1,6 +1,6 @@
 import { makeComparisonResults } from "@shared/tests";
 import { describe, expect, it } from "vitest";
-import { generateCsvReport, NEW_LINE } from "./csv";
+import { generateCsvReport } from "./csv";
 
 const baseSummary = {
 	totalStars: 100,
@@ -51,7 +51,7 @@ describe("generateCsvReport", () => {
 			summary: baseSummary,
 		});
 
-		const lines = csv.split(NEW_LINE);
+		const lines = csv.split("\n");
 
 		expect(lines[0]).toBe("repository,owner,name,stars,previous,delta,status");
 		expect(lines[1]).toBe("user/repo-a,user,repo-a,60,50,10,active");
@@ -68,7 +68,7 @@ describe("generateCsvReport", () => {
 					name: "new-repo",
 					current: 5,
 					previous: null,
-					delta: 5,
+					delta: 0,
 					isNew: true,
 					isRemoved: false,
 				},
@@ -76,7 +76,7 @@ describe("generateCsvReport", () => {
 			summary: baseSummary,
 		});
 
-		expect(csv).toContain("new-repo,5,,5,new");
+		expect(csv).toContain("new-repo,5,,0,new");
 	});
 
 	it('marks removed repos with status "removed"', () => {

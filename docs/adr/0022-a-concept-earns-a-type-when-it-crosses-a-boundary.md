@@ -11,8 +11,8 @@ Accepted
 DDD splits cleanly in two here, and only one half is negotiable. The **strategic** half, one ubiquitous
 language and a domain that owes nothing to its host, is what the rest rests on, and is settled in
 [ADR 0004](./0004-layered-source-structure.md). The **tactical** half, the catalogue of value objects,
-aggregates, repositories and events, is where the method asks for an abstraction *before the code has earned
-it*. Taken on faith it produces boilerplate that ends up hiding the rules it was supposed to protect: a
+aggregates, repositories and events, is where the method asks for an abstraction _before the code has earned
+it_. Taken on faith it produces boilerplate that ends up hiding the rules it was supposed to protect: a
 wrapper per primitive, a parse and an unwrap at every reader, and a rule that is now spread across a type, a
 guard and a test instead of stated once where someone will read it.
 
@@ -36,27 +36,26 @@ tactical patterns one by one with a reason for each. It leaves exactly one of th
 cannot be decided once for the whole tree: value objects. This file is that decision, taken per concept.
 
 What was missing was not an opinion. It was a written order of questions, so that two reviews of the same
-finding reach the same answer, and so that a finding which was deliberately *not* modelled leaves a trace
+finding reach the same answer, and so that a finding which was deliberately _not_ modelled leaves a trace
 instead of being re-raised every six months.
 
 ## Decision
 
 **The questions, asked in order. A concept earns a type only when the answers carry it there.**
-
 1. **Is the illegal state reachable?** A shape the type permits but no code path produces is a guard, not a
    bug. Protect it the cheapest way that turns it into a compile error or a loud failure, and say in the
    commit message that it is a guard, so the next reader does not mistake the test for a reproduction.
 2. **Does anyone read it?** Modelling a concept nothing consumes invents a type whose only reader is its own
-   test. This tree already deleted four such exports and says so in
-   [`src/domain/CLAUDE.md`](../../src/domain/CLAUDE.md).
+   test. This tree already deleted four such exports, the ones named above, and `pnpm test:docs` now fails on
+   a runtime export with no production reader.
 3. **Does it cross a boundary?** A concept that leaves `@domain`, reaches an action output, is written to the
    Data Branch, or is spelled twice in two dialects has earned a real type. One that lives inside a single
    function has not.
 
-**A "no" to every one of them means writing the rule rather than coding it**: a bullet in the folder's `CLAUDE.md`, a
-sentence in [CONTEXT.md](../../CONTEXT.md), an assertion in
-[`docs-consistency.test.ts`](../docs-consistency.test.ts), or an ADR. A divergence that is *named* is
-finished work rather than a debt, and the maintenance contract in [CLAUDE.md](../../CLAUDE.md) is what keeps
+**A "no" to every one of them means writing the rule rather than coding it**: a rule in
+[`CODING_STANDARDS.md`](../../CODING_STANDARDS.md), a bullet in the folder's `AGENTS.md`, an assertion in
+[`docs-consistency.test.ts`](../docs-consistency.test.ts), or an ADR. A divergence that is _named_ is
+finished work rather than a debt, and the maintenance contract in [AGENTS.md](../../AGENTS.md) is what keeps
 the name true.
 
 The rejected alternative is the one this file exists to stop being re-proposed: turning the primitives
@@ -89,13 +88,14 @@ does not cross a layer, is not persisted, and no Snapshot timestamp can collide 
 So no `FirstRun` value object; `prepareReportData` returns the boolean beside the string it already derives
 from the same input, and the illegal state stops being representable.
 
-**Rejected: a `Timestamp` type for `starredAt`.** It is compared with `localeCompare` in `diffStargazers`
-and parsed with `toEpochMs` in `buildStarHistory`, so the same primitive is read two ways. Question 3 says
-yes, and a branded type would still have to be unwrapped at both readers. The rule is already named where a
-reader meets it: the stargazer-diffing section of `src/domain/CLAUDE.md` states that the sort is correct
-only while every value is a same-format ISO string, and the `github/` section of
-[`src/infrastructure/CLAUDE.md`](../../src/infrastructure/CLAUDE.md) states that the layer never parses or
-normalizes it. A written rule beats a type that crosses every layer.
+**Rejected: a `Timestamp` type for `starredAt`.** It is compared with `localeCompare` in `diffStargazers`,
+parsed with `toEpochMs` in `buildStarHistory` and checked with `Date.parse` in
+`warnWhenHistoryIsUnreconstructable`, so the same primitive is read three ways. Question 3 says yes, and a
+branded type would still have to be unwrapped at every reader. The rule is already named where a reader
+meets it: the stargazer-diffing section of `src/domain/AGENTS.md` states that the sort is correct only while
+every value is a same-format ISO string, and [`CODING_STANDARDS.md`](../../CODING_STANDARDS.md) has
+`@infrastructure` pass it through as GitHub's raw ISO string, never normalized. A written rule beats a type
+that crosses every layer.
 
 **Rejected: a `RepoFullName` type.** `fullName` is a `Map` key in `compareStars`, split on `/` for a removed
 repository's owner, split again for the comparison chart's short labels, interpolated into GitHub URLs by
@@ -109,7 +109,7 @@ Revisit it only alongside a `DATA_FORMAT_VERSION` bump that is happening anyway.
 **Rejected: unifying the two chart style projections.** `charts.ts` and `emailChartStyle` both project
 `Config` onto an adapter style, and a set of options appears in both. The parity a shared type would assert is
 false, which [ADR 0014](./0014-charts-are-built-as-a-spec-and-rendered-by-adapters.md) and
-[`src/presentation/CLAUDE.md`](../../src/presentation/CLAUDE.md) both already say: `chart.ts` collapses two
+[`src/presentation/AGENTS.md`](../../src/presentation/AGENTS.md) both already say: `chart.ts` collapses two
 curves onto one, reads `emailTheme` rather than `chartTheme`, and never receives `maxPoints`. The drift is
 guarded instead by a test that renders a run twice per shared option, which is the written rule doing the
 work a type would do badly.
@@ -135,6 +135,6 @@ is, and named here so it is not re-raised as an oversight.
   for the repositories the feature exists for. When the argument is not conclusive, treat it as reachable.
 - It does not license leaving primitives untyped by default. Every question has to fail. A concept
   that reaches an action output or the Data Branch has already answered the boundary question.
-- **Where it bites:** the *Conventions* section of [CLAUDE.md](../../CLAUDE.md) points here, and each
-  rejected case above is also named in the folder guide that owns it, so a reader meets the rule before they
-  meet this file.
+- **Where it bites:** the _Types_ section of [`CODING_STANDARDS.md`](../../CODING_STANDARDS.md) points here, and
+  each rejected case above is also named in the folder guide that owns it, so a reader meets the rule before
+  they meet this file.

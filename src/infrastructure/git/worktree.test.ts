@@ -1,7 +1,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import * as core from "@actions/core";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { execute } from "./commands";
 import { cleanup, initializeDataBranch } from "./worktree";
 
@@ -18,6 +18,13 @@ vi.mock("@actions/core", () => ({
 
 const BRANCH = "star-tracker-data";
 const DATA_DIR = `.${BRANCH}`;
+const CHECKOUT_INSTRUCTION =
+	'This action must run inside a checked-out repository. Add an "actions/checkout" step before this action in your workflow.';
+const NOT_A_REPOSITORY = "fatal: not a git repository (or any of the parent directories): .git";
+const DUBIOUS_OWNERSHIP = "fatal: detected dubious ownership in repository at '/github/workspace'";
+const GIT_REPOSITORY_PROBE_FAILURE = (detail: string): string =>
+	`Git command failed: "git rev-parse --is-inside-work-tree"\n${detail}`;
+const isRepositoryProbe = (args: string[]): boolean => args.includes("rev-parse");
 
 function ranGit(...args: string[]): boolean {
 	return vi.mocked(execute).mock.calls.some(([params]) => JSON.stringify(params.args) === JSON.stringify(args));
@@ -41,17 +48,13 @@ const isRemoteProbe = (args: string[]): boolean => args.includes("ls-remote");
 function remoteHasBranch(): void {
 	vi.mocked(execute).mockImplementation(({ args }) => (isRemoteProbe(args) ? `abc123	refs/heads/${BRANCH}` : ""));
 }
-const isWorktreeRemove = (args: string[]): boolean => args[0] === "worktree" && args[1] === "remove";
+const isWorktreeRemove = (args: string[]): boolean => args.includes("worktree") && args.includes("remove");
 
 describe("initializeDataBranch", () => {
 	beforeEach(() => {
-		vi.clearAllMocks();
+		vi.resetAllMocks();
 		vi.mocked(execute).mockReturnValue("");
 		vi.mocked(fs.existsSync).mockReturnValue(false);
-	});
-
-	afterEach(() => {
-		vi.restoreAllMocks();
 	});
 
 	it("derives the data directory from the branch name", () => {
@@ -61,9 +64,14 @@ describe("initializeDataBranch", () => {
 	it("guards the repository and sets the bot identity before touching the branch", () => {
 		initializeDataBranch({ dataBranch: BRANCH });
 
-		expect(ranGit("rev-parse", "--is-inside-work-tree")).toBe(true);
-		expect(ranGit("config", "user.name", "github-actions[bot]")).toBe(true);
-		expect(ranGit("config", "user.email", "github-actions[bot]@users.noreply.github.com")).toBe(true);
+		const commands = vi.mocked(execute).mock.calls.map(([params]) => params.args.join(" "));
+
+		expect(commands.slice(0, 4)).toEqual([
+			"rev-parse --is-inside-work-tree",
+			"config user.name github-actions[bot]",
+			"config user.email github-actions[bot]@users.noreply.github.com",
+			`ls-remote --heads origin ${BRANCH}`,
+		]);
 	});
 
 	it("adds the worktree from the remote branch when it already exists", () => {
@@ -116,11 +124,24 @@ describe("initializeDataBranch", () => {
 	});
 
 	it("throws an actionable error when not inside a checked-out repository", () => {
-		failGitWhen({ matches: (args) => args[0] === "rev-parse" });
+		failGitWhen({ matches: isRepositoryProbe, error: new Error(GIT_REPOSITORY_PROBE_FAILURE(NOT_A_REPOSITORY)) });
 
-		expect(() => initializeDataBranch({ dataBranch: BRANCH })).toThrow(
-			'This action must run inside a checked-out repository. Add an "actions/checkout" step before this action in your workflow.',
-		);
+		expect(() => initializeDataBranch({ dataBranch: BRANCH })).toThrow(CHECKOUT_INSTRUCTION);
+		expect(ranGit("config", "user.name", "github-actions[bot]")).toBe(false);
+	});
+
+	it.each([
+		{ label: "a checkout git refuses as unsafe", detail: DUBIOUS_OWNERSHIP },
+		{ label: "a git that is not installed", detail: "spawnSync git ENOENT" },
+		{ label: "a git that exits without a reason", detail: "Unknown error" },
+	])("rethrows $label with git's own text instead of the checkout instruction", ({ detail }) => {
+		const failure = GIT_REPOSITORY_PROBE_FAILURE(detail);
+
+		failGitWhen({ matches: isRepositoryProbe, error: new Error(failure) });
+
+		expect(() => initializeDataBranch({ dataBranch: BRANCH })).toThrow(failure);
+		expect(() => initializeDataBranch({ dataBranch: BRANCH })).not.toThrow(CHECKOUT_INSTRUCTION);
+		expect(ranGit("config", "user.name", "github-actions[bot]")).toBe(false);
 	});
 
 	it("removes a stale worktree left on disk", () => {
@@ -165,7 +186,7 @@ describe("initializeDataBranch", () => {
 	});
 
 	it("carries on when the new orphan branch has nothing to clear", () => {
-		failGitWhen({ matches: (args) => args[0] === "rm" });
+		failGitWhen({ matches: (args) => args.includes("rm") });
 
 		expect(() => initializeDataBranch({ dataBranch: BRANCH })).not.toThrow();
 		expect(core.debug).toHaveBeenCalledWith("Nothing to remove on the new orphan branch, proceeding anyway");
@@ -181,12 +202,8 @@ describe("initializeDataBranch", () => {
 
 describe("cleanup", () => {
 	beforeEach(() => {
-		vi.clearAllMocks();
+		vi.resetAllMocks();
 		vi.mocked(execute).mockReturnValue("");
-	});
-
-	afterEach(() => {
-		vi.restoreAllMocks();
 	});
 
 	it("removes the worktree", () => {
